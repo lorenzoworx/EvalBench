@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "evalbench"
+version = "0.1.0"
+description = "A local, reproducible, explainable evaluation workbench for Ollama models"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+authors = [{ name = "Lorenzo" }]
+dependencies = [
+  "pydantic>=2.9,<3",
+  "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.11,<2",
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<1",
+  "pytest-cov>=5,<7",
+  "ruff>=0.6,<1",
+  "types-PyYAML>=6.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evalbench"]
+
+[tool.pytest.ini_options]
+addopts = "-q --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.coverage.run]
+source = ["evalbench"]
