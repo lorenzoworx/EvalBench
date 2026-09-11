@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
@@ -73,6 +74,26 @@ class Database:
         with self.connect() as connection:
             rows = connection.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
         return [RunSummary.model_validate(dict(row)) for row in rows]
+
+    def get_cached_generation(self, request_hash: str) -> Generation | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT generation FROM generation_cache WHERE request_hash=?",
+                (request_hash,),
+            ).fetchone()
+        if row is None:
+            return None
+        generation = Generation.model_validate_json(row["generation"])
+        return generation.model_copy(update={"cached": True})
+
+    def put_cached_generation(self, request_hash: str, generation: Generation) -> None:
+        stored = generation.model_copy(update={"cached": False})
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO generation_cache (request_hash, generation, created_at)
+                VALUES (?, ?, ?) ON CONFLICT(request_hash) DO NOTHING""",
+                (request_hash, stored.model_dump_json(), datetime.now(UTC).isoformat()),
+            )
 
     def save_case_result(self, run_id: str, case: EvaluationCase, result: CaseResult) -> None:
         if result.case_id != case.id or result.category != case.category:

@@ -43,3 +43,9 @@ CREATE TABLE IF NOT EXISTS judgments (
     FOREIGN KEY (run_id, case_id)
         REFERENCES case_results(run_id, case_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS generation_cache (
+    request_hash TEXT PRIMARY KEY,
+    generation TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);

@@ -75,7 +75,7 @@ def test_initialize_creates_wal_database(database: Database) -> None:
             ).fetchall()
         }
     assert mode == "wal"
-    assert {"runs", "case_results", "judgments"} <= tables
+    assert {"runs", "case_results", "judgments", "generation_cache"} <= tables
 
 
 def test_create_get_update_and_list_runs(database: Database) -> None:
