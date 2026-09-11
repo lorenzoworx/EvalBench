@@ -17,3 +17,4 @@ frontend/vite.config.d.ts
 results/*.db*
 .env
 .DS_Store
+questions.md
