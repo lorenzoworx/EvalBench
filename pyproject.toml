@@ -14,6 +14,7 @@ dependencies = [
   "jsonschema>=4.23,<5",
   "pydantic>=2.9,<3",
   "pyyaml>=6.0,<7",
+  "typer>=0.20,<1",
 ]
 
 [project.optional-dependencies]
@@ -29,6 +30,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/evalbench"]
+
+[project.scripts]
+evalbench = "evalbench.cli:app"
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers"
