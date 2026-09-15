@@ -7,6 +7,7 @@ import {
   RunMetrics,
   RunSummary,
 } from "./api";
+import ComparisonPanel from "./ComparisonPanel";
 
 interface ResultsWorkspaceProps {
   preferredRunId?: string | null;
@@ -277,6 +278,8 @@ export default function ResultsWorkspace({
                       ))}
                   </div>
                 </section>
+
+                <ComparisonPanel runs={runs} preferredCandidateId={selectedRunId} />
 
                 <section className="case-explorer" aria-labelledby="cases-title">
                   <div className="subheading">

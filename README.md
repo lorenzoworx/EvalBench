@@ -20,9 +20,8 @@ deterministic offline replay and direct local Ollama inference.
 - Background API runs with single-run admission, polling state, and cooperative cancellation.
 - A responsive React control surface for model/suite selection, live progress, failures, and cancellation.
 - Completed-run history with statistical metrics, category accuracy, and filterable case evidence.
+- Paired-run dashboard comparisons with regressions, improvements, and exact McNemar results.
 - One shared run service used by both the CLI and web API.
-
-Paired-run comparison remains a later dashboard slice.
 
 ## Setup
 

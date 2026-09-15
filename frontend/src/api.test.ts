@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   cancelRun,
+  compareRuns,
   getRunMetrics,
   getRunStatus,
   listModels,
@@ -32,6 +33,18 @@ function jsonResponse(payload: unknown, status = 200): Response {
     expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/runs", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/runs/run%2Fone/metrics", undefined);
     expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/runs/run%2Fone/results", undefined);
+  });
+
+  it("encodes paired comparison inputs and the significance threshold", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ case_count: 60 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await compareRuns("baseline/one", "candidate two", 0.1);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/compare?baseline_run_id=baseline%2Fone&candidate_run_id=candidate+two&alpha=0.1",
+      undefined,
+    );
   });
 }
 

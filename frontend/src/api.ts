@@ -78,6 +78,28 @@ export interface CaseResult {
   passed: boolean;
 }
 
+export interface McNemarResult {
+  both_passed: number;
+  baseline_only_passed: number;
+  candidate_only_passed: number;
+  both_failed: number;
+  exact_p_value: number;
+  alpha: number;
+  significant: boolean;
+}
+
+export interface RunComparison {
+  baseline_run_id: string;
+  candidate_run_id: string;
+  case_count: number;
+  baseline_accuracy: number;
+  candidate_accuracy: number;
+  accuracy_delta: number;
+  regressions: string[];
+  improvements: string[];
+  mcnemar: McNemarResult;
+}
+
 interface ErrorPayload {
   detail?: string;
 }
@@ -141,4 +163,17 @@ export function getRunMetrics(runId: string): Promise<RunMetrics> {
 
 export function listRunResults(runId: string): Promise<CaseResult[]> {
   return request<CaseResult[]>(`/api/runs/${encodeURIComponent(runId)}/results`);
+}
+
+export function compareRuns(
+  baselineRunId: string,
+  candidateRunId: string,
+  alpha = 0.05,
+): Promise<RunComparison> {
+  const query = new URLSearchParams({
+    baseline_run_id: baselineRunId,
+    candidate_run_id: candidateRunId,
+    alpha: String(alpha),
+  });
+  return request<RunComparison>(`/api/compare?${query}`);
 }

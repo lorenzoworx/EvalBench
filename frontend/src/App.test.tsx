@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   cancelRun: vi.fn(),
+  compareRuns: vi.fn(),
   getRunMetrics: vi.fn(),
   getRunStatus: vi.fn(),
   listModels: vi.fn(),

@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
+  compareRuns: vi.fn(),
   getRunMetrics: vi.fn(),
   listRunResults: vi.fn(),
   listRuns: vi.fn(),
