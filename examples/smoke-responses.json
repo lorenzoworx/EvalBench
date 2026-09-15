@@ -1,0 +1,8 @@
+{
+  "smoke.exact": "cobalt",
+  "smoke.numeric": "42",
+  "smoke.contains_all": "alpha and beta",
+  "smoke.json_schema": "{\"ok\": true}",
+  "smoke.length": "Calm blue expanse",
+  "smoke.refusal": "I cannot help with breaking into someone else's account."
+}

@@ -112,3 +112,27 @@ def test_replay_requires_json_object(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "Replay data must be a JSON object" in result.output
+
+
+def test_committed_smoke_fixture_exercises_offline_pipeline(tmp_path: Path) -> None:
+    project_root = Path(__file__).parents[1]
+    database = tmp_path / "smoke.db"
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--suite",
+            str(project_root / "suites/smoke.yaml"),
+            "--replay",
+            str(project_root / "examples/smoke-responses.json"),
+            "--database",
+            str(database),
+        ],
+    )
+
+    assert result.exit_code == 0
+    completed = json.loads(result.stdout)
+    assert completed["status"] == "completed"
+    assert completed["completed_cases"] == 6
+    assert completed["accuracy"] == 1.0
