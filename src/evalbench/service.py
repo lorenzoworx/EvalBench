@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from evalbench.cache import generation_request_hash
 from evalbench.graders import grade_case, passed_all_primary
 from evalbench.models import CaseResult, EvaluationSuite, RunSummary
-from evalbench.providers import Provider, ProviderError
+from evalbench.providers import Provider
 from evalbench.store import Database
 
 
@@ -52,12 +52,7 @@ class RunService:
                     f"affected cases: {', '.join(unsupported)}."
                 )
 
-            available_models = await self.provider.models()
-            if model not in available_models:
-                raise ProviderError(
-                    f"Model {model!r} is unavailable from {provider_name}; "
-                    f"choose one of {available_models!r}."
-                )
+            await self.provider.preflight(model)
 
             for case in suite.cases:
                 request_hash = generation_request_hash(

@@ -1,7 +1,10 @@
+import json
+
+import httpx
 import pytest
 
 from evalbench.models import EvaluationCase, Generation
-from evalbench.providers import Provider, ProviderError, ReplayProvider
+from evalbench.providers import OllamaProvider, Provider, ProviderError, ReplayProvider
 
 
 def make_case(case_id: str = "case") -> EvaluationCase:
@@ -68,3 +71,127 @@ async def test_models_returns_defensive_copy() -> None:
     models.append("mutated")
 
     assert await provider.models() == ["fixture-a", "fixture-b"]
+
+
+def ollama(transport: httpx.AsyncBaseTransport, *, timeout: float = 120) -> OllamaProvider:
+    return OllamaProvider(transport=transport, timeout=timeout)
+
+
+@pytest.mark.asyncio
+async def test_ollama_lists_installed_models() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/tags"
+        return httpx.Response(
+            200,
+            json={"models": [{"name": "qwen3:0.6b"}, {"name": "gemma3:4b"}]},
+        )
+
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        assert await provider.models() == ["qwen3:0.6b", "gemma3:4b"]
+
+
+@pytest.mark.asyncio
+async def test_ollama_missing_model_has_pull_instruction() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"models": [{"name": "other:1b"}]})
+
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        with pytest.raises(ProviderError, match=r"ollama pull qwen3:0\.6b"):
+            await provider.preflight("qwen3:0.6b")
+
+
+@pytest.mark.asyncio
+async def test_ollama_maps_chat_payload_and_metrics() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/chat"
+        request_body = json.loads(request.content)
+        assert request_body == {
+            "model": "qwen3:0.6b",
+            "messages": [
+                {"role": "system", "content": "Be terse."},
+                {"role": "user", "content": "prompt"},
+            ],
+            "stream": False,
+            "options": {"temperature": 0.25, "num_predict": 64},
+        }
+        return httpx.Response(
+            200,
+            json={
+                "message": {"role": "assistant", "content": "answer"},
+                "done": True,
+                "done_reason": "stop",
+                "prompt_eval_count": 9,
+                "eval_count": 3,
+                "total_duration": 2_000_000,
+                "eval_duration": 1_000_000,
+            },
+        )
+
+    case = make_case().model_copy(
+        update={
+            "system": "Be terse.",
+            "generation": make_case().generation.model_copy(
+                update={"temperature": 0.25, "max_tokens": 64}
+            ),
+        }
+    )
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        result = await provider.generate("qwen3:0.6b", case)
+
+    assert result == Generation(
+        text="answer",
+        done_reason="stop",
+        prompt_tokens=9,
+        output_tokens=3,
+        total_duration_ns=2_000_000,
+        eval_duration_ns=1_000_000,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "message"),
+    [
+        ("connect", "ollama serve"),
+        ("timeout", "timed out after 3 seconds"),
+        ("http", "HTTP 500"),
+        ("invalid_json", "request failed"),
+    ],
+)
+async def test_ollama_transport_errors_are_actionable(failure: str, message: str) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "connect":
+            raise httpx.ConnectError("offline", request=request)
+        if failure == "timeout":
+            raise httpx.ReadTimeout("slow", request=request)
+        if failure == "http":
+            return httpx.Response(500, text="engine failed")
+        return httpx.Response(200, text="not-json")
+
+    async with ollama(httpx.MockTransport(handler), timeout=3) as provider:
+        with pytest.raises(ProviderError, match=message):
+            await provider.models()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("endpoint", "response", "message"),
+    [
+        ("models", {}, "malformed model list"),
+        ("chat", {"done": True}, "malformed chat response"),
+    ],
+)
+async def test_ollama_rejects_malformed_success_response(
+    endpoint: str, response: dict[str, object], message: str
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=response)
+
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        with pytest.raises(ProviderError, match=message):
+            if endpoint == "models":
+                await provider.models()
+            else:
+                await provider.generate("qwen3:0.6b", make_case())
