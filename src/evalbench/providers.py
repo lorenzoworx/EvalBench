@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from types import TracebackType
-from typing import Any, Protocol, Self, runtime_checkable
+from typing import Any, Protocol, Self, cast, runtime_checkable
 
 import httpx
 from pydantic import BaseModel, ValidationError
@@ -168,6 +169,36 @@ class OllamaProvider:
             total_duration_ns=response.total_duration,
             eval_duration_ns=response.eval_duration,
         )
+
+    async def structured_chat(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return a JSON object from Ollama's schema-constrained chat mode."""
+        payload = await self._request(
+            "POST",
+            "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "format": schema,
+                "options": {"temperature": 0},
+            },
+        )
+        try:
+            response = _OllamaChatResponse.model_validate(payload)
+            content = json.loads(response.message.content)
+        except (ValidationError, json.JSONDecodeError) as exc:
+            raise ProviderError(f"Ollama returned malformed structured output: {exc}") from exc
+        if not isinstance(content, dict):
+            raise ProviderError(
+                "Ollama returned malformed structured output: expected a JSON object."
+            )
+        return cast(dict[str, Any], content)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:

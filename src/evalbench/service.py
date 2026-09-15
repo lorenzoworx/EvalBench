@@ -88,7 +88,7 @@ class RunService:
             ]
             if unsupported:
                 raise ValueError(
-                    "Judge graders are not available until Milestone 5; "
+                    "Judge graders require configured judge orchestration; "
                     f"affected cases: {', '.join(unsupported)}."
                 )
 

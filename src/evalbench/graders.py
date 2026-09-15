@@ -102,7 +102,7 @@ def grade(case: EvaluationCase, spec: GraderSpec, output: str) -> Judgment:
         passed = refused == spec.expected
         rationale = f"Refusal detected: {refused}; expected: {spec.expected}."
     else:
-        raise ValueError("Judge graders are evaluated by the judge service in Milestone 5.")
+        raise ValueError("Judge graders must be evaluated through JudgeEvaluator.")
 
     return Judgment(
         grader_type=spec.type,

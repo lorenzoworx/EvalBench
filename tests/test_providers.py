@@ -151,6 +151,50 @@ async def test_ollama_maps_chat_payload_and_metrics() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ollama_requests_schema_constrained_json_at_temperature_zero() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"score": {"type": "integer"}},
+        "required": ["score"],
+    }
+    messages = [{"role": "user", "content": "Evaluate this."}]
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "POST"
+        assert request.url.path == "/api/chat"
+        assert json.loads(request.content) == {
+            "model": "gemma3:4b",
+            "messages": messages,
+            "stream": False,
+            "format": schema,
+            "options": {"temperature": 0},
+        }
+        return httpx.Response(
+            200,
+            json={"message": {"role": "assistant", "content": '{"score": 2}'}, "done": True},
+        )
+
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        assert await provider.structured_chat("gemma3:4b", messages=messages, schema=schema) == {
+            "score": 2
+        }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["not json", "[1, 2]"])
+async def test_ollama_rejects_malformed_structured_output(content: str) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"role": "assistant", "content": content}, "done": True},
+        )
+
+    async with ollama(httpx.MockTransport(handler)) as provider:
+        with pytest.raises(ProviderError, match="malformed structured output"):
+            await provider.structured_chat("gemma3:4b", messages=[], schema={})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "message"),
     [

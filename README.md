@@ -21,7 +21,10 @@ deterministic offline replay and direct local Ollama inference.
 - A responsive React control surface for model/suite selection, live progress, failures, and cancellation.
 - Completed-run history with statistical metrics, category accuracy, and filterable case evidence.
 - Paired-run dashboard comparisons with regressions, improvements, and exact McNemar results.
+- A versioned three-level quality rubric and schema-constrained local Ollama judge adapter.
 - One shared run service used by both the CLI and web API.
+
+Judge-run orchestration, judge caching, human labeling, and agreement reporting remain later slices.
 
 ## Setup
 

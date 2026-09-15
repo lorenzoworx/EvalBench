@@ -150,7 +150,7 @@ async def test_judge_case_fails_before_provider_call(tmp_path: Path) -> None:
     provider = CountingReplayProvider({"judge-case": "answer"})
     database = Database(tmp_path / "evalbench.db")
 
-    with pytest.raises(ValueError, match="Milestone 5.*judge-case"):
+    with pytest.raises(ValueError, match="configured judge orchestration.*judge-case"):
         await RunService(database, provider).run(
             suite, "replay", provider_name="replay", run_id="judge-run"
         )
