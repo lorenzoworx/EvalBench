@@ -116,6 +116,29 @@ async def test_provider_failure_retains_completed_cases(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_cooperative_cancellation_retains_completed_cases(tmp_path: Path) -> None:
+    database = Database(tmp_path / "evalbench.db")
+    provider = CountingReplayProvider({"one": "2", "two": "yes"})
+    service = RunService(database, provider)
+    checks = iter([False, False, True])
+
+    run = await service.run(
+        make_suite(),
+        "replay",
+        provider_name="replay",
+        run_id="cancelled-run",
+        should_cancel=lambda: next(checks),
+    )
+
+    assert run.status == "cancelled"
+    assert run.completed_cases == 1
+    assert run.accuracy == 1
+    assert run.completed_at is not None
+    assert len(database.list_case_results(run.id)) == 1
+    assert provider.calls == 1
+
+
+@pytest.mark.asyncio
 async def test_judge_case_fails_before_provider_call(tmp_path: Path) -> None:
     case = EvaluationCase(
         id="judge-case",

@@ -17,6 +17,7 @@ deterministic offline replay and direct local Ollama inference.
 - Content-addressed generation caching keyed by the complete inference request.
 - Seeded statistical summaries and exact paired McNemar comparisons.
 - A typed FastAPI read API for suites, stored runs, results, metrics, and comparisons.
+- Background API runs with single-run admission, polling state, and cooperative cancellation.
 - One shared run service used by both the CLI and web API.
 
 Background run control and the functional dashboard are later milestones and are

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from evalbench.cache import generation_request_hash
@@ -26,10 +27,27 @@ class RunService:
         *,
         provider_name: str,
         run_id: str | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> RunSummary:
         if self.provider is None:
             raise RuntimeError("A provider is required to start an evaluation run.")
-        provider = self.provider
+        run = self.create_run(
+            suite,
+            model,
+            provider_name=provider_name,
+            run_id=run_id,
+        )
+        return await self.execute(run, suite, should_cancel=should_cancel)
+
+    def create_run(
+        self,
+        suite: EvaluationSuite,
+        model: str,
+        *,
+        provider_name: str,
+        run_id: str | None = None,
+    ) -> RunSummary:
+        """Persist a pending run before asynchronous execution begins."""
         run = RunSummary(
             id=run_id or str(uuid.uuid4()),
             suite_name=suite.name,
@@ -40,11 +58,29 @@ class RunService:
             total_cases=len(suite.cases),
         )
         self.database.create_run(run)
+        return run
+
+    async def execute(
+        self,
+        run: RunSummary,
+        suite: EvaluationSuite,
+        *,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> RunSummary:
+        """Execute a previously persisted run, checking cancellation between cases."""
+        if self.provider is None:
+            raise RuntimeError("A provider is required to start an evaluation run.")
+        provider = self.provider
+        if run.status != "pending":
+            raise ValueError(f"Run {run.id!r} must be pending before execution.")
         run = run.model_copy(update={"status": "running"})
         self.database.update_run(run)
 
         outcomes: list[bool] = []
         try:
+            if should_cancel is not None and should_cancel():
+                return self._cancel(run, outcomes)
+
             unsupported = [
                 case.id
                 for case in suite.cases
@@ -56,17 +92,19 @@ class RunService:
                     f"affected cases: {', '.join(unsupported)}."
                 )
 
-            await provider.preflight(model)
+            await provider.preflight(run.model)
 
             for case in suite.cases:
+                if should_cancel is not None and should_cancel():
+                    return self._cancel(run, outcomes)
                 request_hash = generation_request_hash(
-                    model=model,
+                    model=run.model,
                     case=case,
                     provider_schema_version=provider.schema_version,
                 )
                 generation = self.database.get_cached_generation(request_hash)
                 if generation is None:
-                    generation = await provider.generate(model, case)
+                    generation = await provider.generate(run.model, case)
                     self.database.put_cached_generation(request_hash, generation)
 
                 judgments = grade_case(case, generation.text)
@@ -107,6 +145,24 @@ class RunService:
             )
             self.database.update_run(failed)
             raise
+
+    def _cancel(self, run: RunSummary, outcomes: list[bool]) -> RunSummary:
+        update: dict[str, object] = {
+            "status": "cancelled",
+            "completed_at": datetime.now(UTC),
+        }
+        if outcomes:
+            ci_low, ci_high = bootstrap_accuracy_ci(outcomes)
+            update.update(
+                {
+                    "accuracy": sum(outcomes) / len(outcomes),
+                    "ci_low": ci_low,
+                    "ci_high": ci_high,
+                }
+            )
+        cancelled = run.model_copy(update=update)
+        self.database.update_run(cancelled)
+        return cancelled
 
     def metrics(self, run_id: str) -> RunMetrics:
         if self.database.get_run(run_id) is None:

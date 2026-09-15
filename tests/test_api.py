@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,7 +7,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from evalbench.api import create_app, get_database
+from evalbench.jobs import RunCoordinator
 from evalbench.models import CaseResult, EvaluationCase, Generation, RunSummary
+from evalbench.providers import ProviderError, ReplayProvider
 from evalbench.store import Database
 
 
@@ -89,7 +92,12 @@ async def api(tmp_path: Path) -> AsyncIterator[tuple[AsyncClient, Database]]:
     suite_directory = tmp_path / "suites"
     write_suite(suite_directory)
     database_path = tmp_path / "evalbench.db"
-    app = create_app(database_path=database_path, suite_directory=suite_directory)
+    app = create_app(
+        database_path=database_path,
+        suite_directory=suite_directory,
+        provider=ReplayProvider({}, model_names=("fixture",)),
+        provider_name="replay",
+    )
     database = Database(database_path)
     older = datetime(2026, 1, 1, tzinfo=UTC)
     newer = datetime(2026, 1, 2, tzinfo=UTC)
@@ -220,7 +228,12 @@ async def test_database_dependency_can_be_overridden(tmp_path: Path) -> None:
         {"one": True},
         created_at=datetime(2026, 1, 1, tzinfo=UTC),
     )
-    app = create_app(database_path=default_database, suite_directory=tmp_path)
+    app = create_app(
+        database_path=default_database,
+        suite_directory=tmp_path,
+        provider=ReplayProvider({}),
+        provider_name="replay",
+    )
     app.dependency_overrides[get_database] = lambda: alternate
 
     async with AsyncClient(
@@ -231,3 +244,186 @@ async def test_database_dependency_can_be_overridden(tmp_path: Path) -> None:
 
     assert response.status_code == 200
     assert [run["id"] for run in response.json()] == ["alternate"]
+
+
+async def test_models_and_background_run_completion(tmp_path: Path) -> None:
+    suite_directory = tmp_path / "suites"
+    write_suite(suite_directory)
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=suite_directory,
+        provider=ReplayProvider(
+            {"one": "2", "two": "I cannot help with that request."},
+            model_names=("fixture-model",),
+        ),
+        provider_name="replay",
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        models = await client.get("/api/models")
+        started = await client.post(
+            "/api/runs",
+            json={"suite_id": "tiny", "model": "fixture-model"},
+        )
+        await app.state.coordinator.wait_until_idle()
+        run_id = started.json()["id"]
+        completed = await client.get(f"/api/runs/{run_id}/status")
+
+    assert models.status_code == 200
+    assert models.json() == ["fixture-model"]
+    assert started.status_code == 202
+    assert started.json()["status"] == "pending"
+    assert completed.json()["status"] == "completed"
+    assert completed.json()["completed_cases"] == 2
+
+
+class BlockingProvider:
+    schema_version = "blocking-v1"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def models(self) -> list[str]:
+        return ["blocking-model"]
+
+    async def preflight(self, model: str) -> None:
+        assert model == "blocking-model"
+
+    async def generate(self, model: str, case: EvaluationCase) -> Generation:
+        if case.id == "one":
+            self.started.set()
+            await self.release.wait()
+            return Generation(text="2")
+        return Generation(text="I cannot help with that request.")
+
+
+async def test_rejects_concurrent_run_and_cancels_between_cases(tmp_path: Path) -> None:
+    suite_directory = tmp_path / "suites"
+    write_suite(suite_directory)
+    provider = BlockingProvider()
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=suite_directory,
+        provider=provider,
+        provider_name="test",
+    )
+    coordinator: RunCoordinator = app.state.coordinator
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        started = await client.post(
+            "/api/runs",
+            json={"suite_id": "tiny", "model": "blocking-model"},
+        )
+        run_id = started.json()["id"]
+        await provider.started.wait()
+
+        conflict = await client.post(
+            "/api/runs",
+            json={"suite_id": "tiny", "model": "blocking-model"},
+        )
+        cancellation = await client.post(f"/api/runs/{run_id}/cancel")
+        provider.release.set()
+        await coordinator.wait_until_idle()
+        cancelled = await client.get(f"/api/runs/{run_id}/status")
+        results = await client.get(f"/api/runs/{run_id}/results")
+        repeated_cancel = await client.post(f"/api/runs/{run_id}/cancel")
+        next_started = await client.post(
+            "/api/runs",
+            json={"suite_id": "tiny", "model": "blocking-model"},
+        )
+        await coordinator.wait_until_idle()
+        next_status = await client.get(f"/api/runs/{next_started.json()['id']}/status")
+
+    assert conflict.status_code == 409
+    assert run_id in conflict.json()["detail"]
+    assert cancellation.status_code == 202
+    assert cancellation.json() == {"id": run_id, "cancellation_requested": True}
+    assert cancelled.json()["status"] == "cancelled"
+    assert cancelled.json()["completed_cases"] == 1
+    assert [result["case_id"] for result in results.json()] == ["one"]
+    assert repeated_cancel.status_code == 409
+    assert next_started.status_code == 202
+    assert next_status.json()["status"] == "completed"
+
+
+async def test_start_validates_request_and_suite(tmp_path: Path) -> None:
+    suite_directory = tmp_path / "suites"
+    write_suite(suite_directory)
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=suite_directory,
+        provider=ReplayProvider({}),
+        provider_name="replay",
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        missing = await client.post(
+            "/api/runs",
+            json={"suite_id": "missing", "model": "replay"},
+        )
+        invalid = await client.post(
+            "/api/runs",
+            json={"suite_id": "", "model": ""},
+        )
+        missing_cancel = await client.post("/api/runs/missing/cancel")
+
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "Suite 'missing' does not exist."
+    assert invalid.status_code == 422
+    assert missing_cancel.status_code == 404
+
+
+async def test_model_discovery_failure_returns_503(tmp_path: Path) -> None:
+    class FailingModelsProvider(ReplayProvider):
+        async def models(self) -> list[str]:
+            raise ProviderError("model service unavailable")
+
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=tmp_path,
+        provider=FailingModelsProvider({}),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get("/api/models")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "model service unavailable"
+
+
+def test_app_startup_marks_abandoned_runs_interrupted(tmp_path: Path) -> None:
+    database_path = tmp_path / "runs.db"
+    database = Database(database_path)
+    database.initialize()
+    database.create_run(
+        RunSummary(
+            id="abandoned",
+            suite_name="tiny",
+            suite_version="1",
+            model="fixture",
+            provider="replay",
+            status="running",
+            total_cases=2,
+        )
+    )
+
+    create_app(
+        database_path=database_path,
+        suite_directory=tmp_path,
+        provider=ReplayProvider({}),
+    )
+
+    recovered = database.get_run("abandoned")
+    assert recovered is not None
+    assert recovered.status == "interrupted"
+    assert recovered.completed_at is not None

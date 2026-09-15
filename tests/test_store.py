@@ -101,6 +101,23 @@ def test_create_get_update_and_list_runs(database: Database) -> None:
     assert database.get_run("missing") is None
 
 
+def test_interrupt_unfinished_runs_preserves_terminal_history(database: Database) -> None:
+    pending = make_run("pending")
+    running = make_run("running").model_copy(update={"status": "running"})
+    completed = make_run("completed").model_copy(update={"status": "completed"})
+    for run in (pending, running, completed):
+        database.create_run(run)
+
+    assert database.interrupt_unfinished_runs() == 2
+    assert database.get_run("pending").status == "interrupted"
+    interrupted = database.get_run("running")
+    assert interrupted is not None
+    assert interrupted.status == "interrupted"
+    assert interrupted.completed_at is not None
+    assert interrupted.error == "Server stopped before the run completed."
+    assert database.get_run("completed") == completed
+
+
 def test_update_rejects_unknown_run(database: Database) -> None:
     with pytest.raises(KeyError, match="missing"):
         database.update_run(make_run("missing"))

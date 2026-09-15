@@ -75,6 +75,17 @@ class Database:
             rows = connection.execute("SELECT * FROM runs ORDER BY created_at DESC").fetchall()
         return [RunSummary.model_validate(dict(row)) for row in rows]
 
+    def interrupt_unfinished_runs(self) -> int:
+        """Mark work left active by a previous server process as interrupted."""
+        with self.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE runs SET status='interrupted', completed_at=?,
+                    error=COALESCE(error, 'Server stopped before the run completed.')
+                WHERE status IN ('pending', 'running')""",
+                (datetime.now(UTC).isoformat(),),
+            )
+        return cursor.rowcount
+
     def get_cached_generation(self, request_hash: str) -> Generation | None:
         with self.connect() as connection:
             row = connection.execute(

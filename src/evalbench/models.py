@@ -112,6 +112,21 @@ class SuiteSummary(BaseModel):
     categories: list[str]
 
 
+class RunRequest(BaseModel):
+    suite_id: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+
+
+class RunAccepted(BaseModel):
+    id: str
+    status: Literal["pending"] = "pending"
+
+
+class CancellationAccepted(BaseModel):
+    id: str
+    cancellation_requested: Literal[True] = True
+
+
 class Generation(BaseModel):
     text: str
     done_reason: str | None = None
