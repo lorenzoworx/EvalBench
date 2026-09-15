@@ -104,6 +104,14 @@ class EvaluationSuite(BaseModel):
         return self
 
 
+class SuiteSummary(BaseModel):
+    id: str
+    name: str
+    version: str
+    case_count: int = Field(ge=0)
+    categories: list[str]
+
+
 class Generation(BaseModel):
     text: str
     done_reason: str | None = None
@@ -189,4 +197,12 @@ class RunSummary(BaseModel):
     accuracy: float | None = None
     ci_low: float | None = None
     ci_high: float | None = None
+    error: str | None = None
+
+
+class RunStatus(BaseModel):
+    id: str
+    status: Literal["pending", "running", "completed", "failed", "cancelled", "interrupted"]
+    completed_cases: int = Field(ge=0)
+    total_cases: int = Field(ge=0)
     error: str | None = None

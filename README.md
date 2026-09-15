@@ -15,10 +15,12 @@ deterministic offline replay and direct local Ollama inference.
 - Direct non-streaming Ollama inference with local model preflight checks.
 - SQLite storage for runs, immutable case snapshots, generations, and judgments.
 - Content-addressed generation caching keyed by the complete inference request.
-- One shared run service used by the CLI and future web API.
+- Seeded statistical summaries and exact paired McNemar comparisons.
+- A typed FastAPI read API for suites, stored runs, results, metrics, and comparisons.
+- One shared run service used by both the CLI and web API.
 
-Ollama integration, statistical comparison, and the functional dashboard are later
-milestones and are intentionally absent today.
+Background run control and the functional dashboard are later milestones and are
+intentionally absent today.
 
 ## Setup
 
@@ -94,9 +96,9 @@ Pydantic validation ──► RunService ──► Provider protocol ──┬�
                 SQLite run + case evidence
 ```
 
-`RunService` owns orchestration so CLI and future API behavior cannot diverge. The
-provider protocol keeps inference replaceable: CI uses replay data now, while the
-next milestone adds Ollama without changing grading or persistence.
+`RunService` owns orchestration so CLI and API behavior cannot diverge. The provider
+protocol keeps inference replaceable: CI uses replay data, while local runs use
+Ollama without changing grading or persistence.
 
 ## Development checks
 
