@@ -142,6 +142,17 @@ class CaseResult(BaseModel):
     passed: bool
 
 
+class RunMetrics(BaseModel):
+    case_count: int = Field(ge=0)
+    accuracy: float | None = Field(default=None, ge=0, le=1)
+    ci_low: float | None = Field(default=None, ge=0, le=1)
+    ci_high: float | None = Field(default=None, ge=0, le=1)
+    category_accuracy: dict[str, float]
+    latency_ms_p50: float | None = Field(default=None, ge=0)
+    latency_ms_p95: float | None = Field(default=None, ge=0)
+    tokens_per_second: float | None = Field(default=None, ge=0)
+
+
 class RunSummary(BaseModel):
     id: str
     suite_name: str

@@ -5,7 +5,8 @@ from datetime import UTC, datetime
 
 from evalbench.cache import generation_request_hash
 from evalbench.graders import grade_case, passed_all_primary
-from evalbench.models import CaseResult, EvaluationSuite, RunSummary
+from evalbench.metrics import bootstrap_accuracy_ci, summarize_results
+from evalbench.models import CaseResult, EvaluationSuite, RunMetrics, RunSummary
 from evalbench.providers import Provider
 from evalbench.store import Database
 
@@ -81,11 +82,14 @@ class RunService:
                 run = run.model_copy(update={"completed_cases": len(outcomes)})
                 self.database.update_run(run)
 
+            ci_low, ci_high = bootstrap_accuracy_ci(outcomes)
             run = run.model_copy(
                 update={
                     "status": "completed",
                     "completed_at": datetime.now(UTC),
                     "accuracy": sum(outcomes) / len(outcomes),
+                    "ci_low": ci_low,
+                    "ci_high": ci_high,
                 }
             )
             self.database.update_run(run)
@@ -100,3 +104,10 @@ class RunService:
             )
             self.database.update_run(failed)
             raise
+
+    def metrics(self, run_id: str) -> RunMetrics:
+        if self.database.get_run(run_id) is None:
+            raise KeyError(f"Run {run_id!r} does not exist.")
+        return summarize_results(
+            [record.result for record in self.database.list_case_results(run_id)]
+        )

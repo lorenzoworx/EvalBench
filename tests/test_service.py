@@ -53,11 +53,16 @@ async def test_replay_runner_sqlite_end_to_end(tmp_path: Path) -> None:
     assert run.status == "completed"
     assert run.completed_cases == 2
     assert run.accuracy == 0.5
+    assert run.ci_low == 0.0
+    assert run.ci_high == 1.0
     assert run.completed_at is not None
     assert database.get_run(run.id) == run
     records = database.list_case_results(run.id)
     assert [record.result.passed for record in records] == [True, False]
     assert provider.calls == 2
+    metrics = service.metrics(run.id)
+    assert metrics.accuracy == 0.5
+    assert metrics.category_accuracy == {"instruction": 0.0, "math": 1.0}
 
 
 @pytest.mark.asyncio
@@ -129,3 +134,10 @@ async def test_judge_case_fails_before_provider_call(tmp_path: Path) -> None:
 
     assert provider.calls == 0
     assert database.get_run("judge-run").status == "failed"
+
+
+def test_metrics_reject_unknown_run(tmp_path: Path) -> None:
+    service = RunService(Database(tmp_path / "evalbench.db"), ReplayProvider({}))
+
+    with pytest.raises(KeyError, match="missing"):
+        service.metrics("missing")
