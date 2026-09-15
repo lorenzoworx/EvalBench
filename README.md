@@ -79,6 +79,24 @@ Validate the full suite independently:
 evalbench suite validate suites/core.yaml
 ```
 
+## Local web application
+
+Build the frontend and start the integrated local server:
+
+```bash
+cd frontend
+npm run build
+cd ..
+evalbench serve
+```
+
+Open `http://127.0.0.1:8000`. EvalBench always binds its integrated server to the
+loopback interface; `--port` changes the port without exposing a network host option.
+
+For frontend development, run `npm run dev` in `frontend/` alongside `evalbench
+serve`. Vite listens on `127.0.0.1` and proxies `/api` requests to the local API on
+port 8000.
+
 ## Architecture
 
 ```text

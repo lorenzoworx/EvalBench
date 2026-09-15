@@ -24,6 +24,7 @@ from evalbench.providers import OllamaProvider, Provider, ProviderError
 from evalbench.service import RunService
 from evalbench.store import Database
 from evalbench.suite import discover_suites
+from evalbench.web import mount_frontend
 
 
 def get_database(request: Request) -> Database:
@@ -52,6 +53,7 @@ def create_app(
     suite_directory: str | Path = "suites",
     provider: Provider | None = None,
     provider_name: str = "ollama",
+    frontend_directory: str | Path | None = "frontend/dist",
 ) -> FastAPI:
     """Build the local EvalBench API with explicit filesystem dependencies."""
     database = Database(database_path)
@@ -194,6 +196,7 @@ def create_app(
                 detail=str(exc),
             ) from exc
 
+    app.state.frontend_mounted = mount_frontend(app, frontend_directory)
     return app
 
 

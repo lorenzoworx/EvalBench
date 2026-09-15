@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import typer
+import uvicorn
 from pydantic import ValidationError
 
+from evalbench.api import create_app
 from evalbench.models import EvaluationSuite, Generation, RunSummary
 from evalbench.providers import OllamaProvider, ProviderError, ReplayProvider
 from evalbench.service import RunService
@@ -144,6 +146,33 @@ def compare_runs(
         typer.echo(f"Comparison failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(comparison.model_dump_json(indent=2))
+
+
+@app.command("serve")
+def serve(
+    database_path: Annotated[Path, typer.Option("--database", dir_okay=False)] = Path(
+        "results/evalbench.db"
+    ),
+    suite_directory: Annotated[Path, typer.Option("--suites", file_okay=False)] = Path("suites"),
+    frontend_directory: Annotated[Path, typer.Option("--frontend", file_okay=False)] = Path(
+        "frontend/dist"
+    ),
+    port: Annotated[int, typer.Option("--port", min=1, max=65535)] = 8000,
+) -> None:
+    """Serve EvalBench locally with Ollama-backed run control."""
+    web_app = create_app(
+        database_path=database_path,
+        suite_directory=suite_directory,
+        frontend_directory=frontend_directory,
+    )
+    if not web_app.state.frontend_mounted:
+        typer.echo(
+            "Frontend build not found; serving the API only. "
+            "Run `npm run build` in frontend/ for the integrated dashboard.",
+            err=True,
+        )
+    typer.echo(f"EvalBench listening at http://127.0.0.1:{port}")
+    uvicorn.run(web_app, host="127.0.0.1", port=port)
 
 
 if __name__ == "__main__":

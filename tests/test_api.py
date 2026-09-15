@@ -246,6 +246,54 @@ async def test_database_dependency_can_be_overridden(tmp_path: Path) -> None:
     assert [run["id"] for run in response.json()] == ["alternate"]
 
 
+async def test_built_frontend_serves_assets_and_spa_routes_without_masking_api(
+    tmp_path: Path,
+) -> None:
+    frontend = tmp_path / "dist"
+    assets = frontend / "assets"
+    assets.mkdir(parents=True)
+    (frontend / "index.html").write_text("<main>EvalBench shell</main>", encoding="utf-8")
+    (assets / "app.js").write_text("console.log('loaded')", encoding="utf-8")
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=tmp_path,
+        frontend_directory=frontend,
+        provider=ReplayProvider({}),
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        root = await client.get("/")
+        client_route = await client.get("/runs/example")
+        asset = await client.get("/assets/app.js")
+        missing_asset = await client.get("/assets/missing.js")
+        missing_api = await client.get("/api/not-a-route")
+
+    assert app.state.frontend_mounted is True
+    assert root.status_code == 200
+    assert root.text == "<main>EvalBench shell</main>"
+    assert client_route.status_code == 200
+    assert client_route.text == root.text
+    assert asset.status_code == 200
+    assert asset.text == "console.log('loaded')"
+    assert missing_asset.status_code == 404
+    assert missing_api.status_code == 404
+    assert "EvalBench shell" not in missing_api.text
+
+
+def test_missing_frontend_build_leaves_api_only(tmp_path: Path) -> None:
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=tmp_path,
+        frontend_directory=tmp_path / "missing",
+        provider=ReplayProvider({}),
+    )
+
+    assert app.state.frontend_mounted is False
+
+
 async def test_models_and_background_run_completion(tmp_path: Path) -> None:
     suite_directory = tmp_path / "suites"
     write_suite(suite_directory)

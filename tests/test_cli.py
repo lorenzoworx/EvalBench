@@ -266,3 +266,61 @@ def test_compare_command_reports_invalid_run(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "Baseline run 'missing' does not exist" in result.output
+
+
+def test_serve_binds_only_to_localhost(tmp_path: Path, monkeypatch) -> None:
+    class State:
+        frontend_mounted = False
+
+    class FakeApp:
+        state = State()
+
+    fake_app = FakeApp()
+    created_with: dict[str, object] = {}
+    served_with: dict[str, object] = {}
+
+    def fake_create_app(**kwargs):
+        created_with.update(kwargs)
+        return fake_app
+
+    def fake_run(application, **kwargs):
+        served_with["application"] = application
+        served_with.update(kwargs)
+
+    monkeypatch.setattr(cli_module, "create_app", fake_create_app)
+    monkeypatch.setattr(cli_module.uvicorn, "run", fake_run)
+    database = tmp_path / "evalbench.db"
+    suites = tmp_path / "suites"
+    frontend = tmp_path / "dist"
+
+    result = runner.invoke(
+        app,
+        [
+            "serve",
+            "--database",
+            str(database),
+            "--suites",
+            str(suites),
+            "--frontend",
+            str(frontend),
+            "--port",
+            "8123",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert created_with == {
+        "database_path": database,
+        "suite_directory": suites,
+        "frontend_directory": frontend,
+    }
+    assert served_with == {"application": fake_app, "host": "127.0.0.1", "port": 8123}
+    assert "http://127.0.0.1:8123" in result.output
+    assert "Frontend build not found" in result.output
+
+
+def test_serve_rejects_invalid_port() -> None:
+    result = runner.invoke(app, ["serve", "--port", "70000"])
+
+    assert result.exit_code == 2
+    assert "65535" in result.output
