@@ -1,6 +1,7 @@
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 
 from typer.testing import CliRunner
 
@@ -24,6 +25,20 @@ cases:
     prompt: What is one plus one?
     expected: "2"
     graders: [{type: numeric}]
+""",
+        encoding="utf-8",
+    )
+
+
+def write_judge_suite(path: Path) -> None:
+    path.write_text(
+        """name: judged
+version: "1"
+cases:
+  - id: one
+    category: reasoning
+    prompt: Explain the answer.
+    graders: [{type: judge, minimum_score: 2}]
 """,
         encoding="utf-8",
     )
@@ -221,6 +236,64 @@ def test_ollama_cli_run_uses_default_model_and_closes_client(tmp_path: Path, mon
     completed = json.loads(result.stdout)
     assert completed["model"] == "qwen3:0.6b"
     assert completed["provider"] == "ollama"
+    assert fake.closed
+
+
+def test_replay_cli_can_grade_with_an_independent_ollama_judge(tmp_path: Path, monkeypatch) -> None:
+    class FakeJudgeProvider:
+        schema_version = "fake-judge-v1"
+
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            self.closed = True
+
+        async def preflight(self, model: str) -> None:
+            assert model == "gemma3:4b"
+
+        async def structured_chat(
+            self,
+            model: str,
+            *,
+            messages: list[dict[str, str]],
+            schema: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"score": 2, "rationale": "Fully correct."}
+
+    fake = FakeJudgeProvider()
+    monkeypatch.setattr(cli_module, "OllamaProvider", lambda: fake)
+    suite = tmp_path / "judge.yaml"
+    replay = tmp_path / "responses.json"
+    database = tmp_path / "evalbench.db"
+    write_judge_suite(suite)
+    replay.write_text(json.dumps({"one": "A complete answer."}), encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        [
+            "run",
+            "--provider",
+            "replay",
+            "--suite",
+            str(suite),
+            "--replay",
+            str(replay),
+            "--database",
+            str(database),
+            "--judge-model",
+            "gemma3:4b",
+        ],
+    )
+
+    assert result.exit_code == 0
+    completed = json.loads(result.stdout)
+    assert completed["judge_model"] == "gemma3:4b"
+    assert completed["accuracy"] == 1
+    assert Database(database).list_case_results(completed["id"])[0].result.judgments[0].score == 2
     assert fake.closed
 
 

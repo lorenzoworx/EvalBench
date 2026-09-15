@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from evalbench.judge import JudgeResponse
 from evalbench.models import CaseResult, EvaluationCase, Generation, Judgment, RunSummary
 from evalbench.store import Database
 
@@ -75,11 +76,44 @@ def test_initialize_creates_wal_database(database: Database) -> None:
             ).fetchall()
         }
     assert mode == "wal"
-    assert {"runs", "case_results", "judgments", "generation_cache"} <= tables
+    assert {"runs", "case_results", "judgments", "generation_cache", "judge_cache"} <= tables
+    with database.connect() as connection:
+        run_columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+    assert "judge_model" in run_columns
+
+
+def test_initialize_adds_judge_provenance_to_an_existing_database(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """CREATE TABLE runs (
+                id TEXT PRIMARY KEY,
+                suite_name TEXT NOT NULL,
+                suite_version TEXT NOT NULL,
+                model TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                completed_cases INTEGER NOT NULL DEFAULT 0,
+                total_cases INTEGER NOT NULL,
+                accuracy REAL,
+                ci_low REAL,
+                ci_high REAL,
+                error TEXT
+            )"""
+        )
+
+    database = Database(path)
+    database.initialize()
+    run = make_run().model_copy(update={"judge_model": "gemma3:4b"})
+    database.create_run(run)
+
+    assert database.get_run(run.id) == run
 
 
 def test_create_get_update_and_list_runs(database: Database) -> None:
-    older = make_run()
+    older = make_run().model_copy(update={"judge_model": "gemma3:4b"})
     newer = make_run("run-2", created_at=datetime(2026, 1, 2, tzinfo=UTC))
     database.create_run(older)
     database.create_run(newer)
@@ -99,6 +133,18 @@ def test_create_get_update_and_list_runs(database: Database) -> None:
     assert database.get_run("run-1") == completed
     assert [run.id for run in database.list_runs()] == ["run-2", "run-1"]
     assert database.get_run("missing") is None
+
+
+def test_judge_cache_is_content_addressed_and_immutable(database: Database) -> None:
+    response = JudgeResponse(score=2, rationale="Fully correct.")
+
+    assert database.get_cached_judge_response("missing") is None
+    database.put_cached_judge_response("request", response)
+    database.put_cached_judge_response(
+        "request", JudgeResponse(score=0, rationale="Should not replace the first response.")
+    )
+
+    assert database.get_cached_judge_response("request") == response
 
 
 def test_interrupt_unfinished_runs_preserves_terminal_history(database: Database) -> None:

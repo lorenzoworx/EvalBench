@@ -32,6 +32,7 @@ export interface RunSummary extends RunStatus {
   suite_version: string;
   model: string;
   provider: string;
+  judge_model: string | null;
   created_at: string;
   completed_at: string | null;
   accuracy: number | null;
@@ -137,11 +138,19 @@ export function listSuites(): Promise<SuiteSummary[]> {
   return request<SuiteSummary[]>("/api/suites");
 }
 
-export function startRun(suiteId: string, model: string): Promise<RunAccepted> {
+export function startRun(
+  suiteId: string,
+  model: string,
+  judgeModel?: string,
+): Promise<RunAccepted> {
   return request<RunAccepted>("/api/runs", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ suite_id: suiteId, model }),
+    body: JSON.stringify({
+      suite_id: suiteId,
+      model,
+      ...(judgeModel ? { judge_model: judgeModel } : {}),
+    }),
   });
 }
 

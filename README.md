@@ -21,10 +21,10 @@ deterministic offline replay and direct local Ollama inference.
 - A responsive React control surface for model/suite selection, live progress, failures, and cancellation.
 - Completed-run history with statistical metrics, category accuracy, and filterable case evidence.
 - Paired-run dashboard comparisons with regressions, improvements, and exact McNemar results.
-- A versioned three-level quality rubric and schema-constrained local Ollama judge adapter.
+- Versioned three-level judging with an independent Ollama model and content-addressed score cache.
 - One shared run service used by both the CLI and web API.
 
-Judge-run orchestration, judge caching, human labeling, and agreement reporting remain later slices.
+Human labeling and agreement reporting remain later slices.
 
 ## Setup
 
@@ -106,16 +106,15 @@ port 8000.
 suite YAML
     │
     ▼
-Pydantic validation ──► RunService ──► Provider protocol ──┬─► ReplayProvider
-                            │                              └─► OllamaProvider
-                            │                 │
-                            │                 └── generation request hash
-                            │                              │
-                            ▼                              ▼
-                      rule graders ◄────────────── SQLite cache
-                            │
-                            ▼
-                SQLite run + case evidence
+Pydantic validation ──► RunService ─┬─► target provider ──► generation cache
+                                    ├─► deterministic rule graders ─────┐
+                                    └─► versioned rubric                │
+                                                  │                     │
+                                                  ▼                     │
+                                       independent Ollama judge         │
+                                                  │                     │
+                                                  ▼                     ▼
+                                           judge score cache ──► SQLite run + case evidence
 ```
 
 `RunService` owns orchestration so CLI and API behavior cannot diverge. The provider

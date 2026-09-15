@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 
+from evalbench.judge import JudgeEvaluator
 from evalbench.models import EvaluationSuite, RunSummary
 from evalbench.providers import Provider
 from evalbench.service import RunService
@@ -26,11 +27,12 @@ class RunCoordinator:
         provider: Provider,
         *,
         provider_name: str,
+        judge_evaluator: JudgeEvaluator | None = None,
     ) -> None:
         self.database = database
         self.provider = provider
         self.provider_name = provider_name
-        self.service = RunService(database, provider)
+        self.service = RunService(database, provider, judge_evaluator)
         self._lock = asyncio.Lock()
         self._active_run_id: str | None = None
         self._active_task: asyncio.Task[None] | None = None
@@ -39,7 +41,13 @@ class RunCoordinator:
     async def models(self) -> list[str]:
         return await self.provider.models()
 
-    async def start(self, suite: EvaluationSuite, model: str) -> RunSummary:
+    async def start(
+        self,
+        suite: EvaluationSuite,
+        model: str,
+        *,
+        judge_model: str | None = None,
+    ) -> RunSummary:
         async with self._lock:
             if self._active_task is not None and not self._active_task.done():
                 if self._active_run_id is None:
@@ -50,6 +58,7 @@ class RunCoordinator:
                 suite,
                 model,
                 provider_name=self.provider_name,
+                judge_model=judge_model,
             )
             cancel_event = asyncio.Event()
             task = asyncio.create_task(

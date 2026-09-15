@@ -1,7 +1,9 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from evalbench.judge import JudgeEvaluator
 from evalbench.models import CaseResult, EvaluationCase, EvaluationSuite, Generation, RunSummary
 from evalbench.providers import ProviderError, ReplayProvider
 from evalbench.service import RunService
@@ -39,6 +41,28 @@ class CountingReplayProvider(ReplayProvider):
     async def generate(self, model: str, case: EvaluationCase) -> Generation:
         self.calls += 1
         return await super().generate(model, case)
+
+
+class RecordingJudgeProvider:
+    schema_version = "judge-fixture-v1"
+
+    def __init__(self, response: dict[str, Any]) -> None:
+        self.response = response
+        self.preflight_models: list[str] = []
+        self.calls = 0
+
+    async def preflight(self, model: str) -> None:
+        self.preflight_models.append(model)
+
+    async def structured_chat(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls += 1
+        return self.response
 
 
 @pytest.mark.asyncio
@@ -157,6 +181,80 @@ async def test_judge_case_fails_before_provider_call(tmp_path: Path) -> None:
 
     assert provider.calls == 0
     assert database.get_run("judge-run").status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_judge_execution_records_provenance_and_reuses_cached_score(tmp_path: Path) -> None:
+    def suite(minimum_score: int) -> EvaluationSuite:
+        return EvaluationSuite(
+            name="judge",
+            version="1",
+            cases=[
+                EvaluationCase(
+                    id="judge-case",
+                    category="reasoning",
+                    prompt="Explain.",
+                    graders=[{"type": "judge", "minimum_score": minimum_score}],
+                )
+            ],
+        )
+
+    database = Database(tmp_path / "evalbench.db")
+    target = CountingReplayProvider({"judge-case": "A partly correct answer."})
+    judge_provider = RecordingJudgeProvider(
+        {"score": 1, "rationale": "Useful, but missing a key step."}
+    )
+    service = RunService(database, target, JudgeEvaluator(judge_provider))
+
+    strict = await service.run(
+        suite(2),
+        "replay",
+        provider_name="replay",
+        run_id="strict",
+        judge_model="gemma3:4b",
+    )
+    lenient = await service.run(
+        suite(1),
+        "replay",
+        provider_name="replay",
+        run_id="lenient",
+        judge_model="gemma3:4b",
+    )
+
+    assert strict.judge_model == "gemma3:4b"
+    assert strict.accuracy == 0
+    assert lenient.accuracy == 1
+    assert target.calls == 1
+    assert judge_provider.calls == 1
+    assert judge_provider.preflight_models == ["gemma3:4b", "gemma3:4b"]
+    strict_judgment = database.list_case_results("strict")[0].result.judgments[0]
+    lenient_judgment = database.list_case_results("lenient")[0].result.judgments[0]
+    assert strict_judgment.score == lenient_judgment.score == 1
+    assert not strict_judgment.passed
+    assert lenient_judgment.passed
+
+
+@pytest.mark.asyncio
+async def test_judge_must_use_an_independent_model(tmp_path: Path) -> None:
+    case = EvaluationCase(
+        id="judge-case",
+        category="reasoning",
+        prompt="Explain.",
+        graders=[{"type": "judge"}],
+    )
+    service = RunService(
+        Database(tmp_path / "evalbench.db"),
+        CountingReplayProvider({"judge-case": "answer"}),
+        JudgeEvaluator(RecordingJudgeProvider({"score": 2, "rationale": "Correct."})),
+    )
+
+    with pytest.raises(ValueError, match="independent"):
+        await service.run(
+            EvaluationSuite(name="judge", version="1", cases=[case]),
+            "replay",
+            provider_name="replay",
+            judge_model="replay",
+        )
 
 
 def test_metrics_reject_unknown_run(tmp_path: Path) -> None:

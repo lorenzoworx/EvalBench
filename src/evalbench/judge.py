@@ -77,6 +77,10 @@ class JudgeResponse(BaseModel):
 
 
 class StructuredChatProvider(Protocol):
+    schema_version: str
+
+    async def preflight(self, model: str) -> None: ...
+
     async def structured_chat(
         self,
         model: str,
@@ -110,17 +114,21 @@ class JudgeEvaluator:
         self.provider = provider
         self.rubric = rubric or load_rubric()
 
-    async def evaluate(
+    async def preflight(self, model: str) -> None:
+        await self.provider.preflight(model)
+
+    async def score(
         self,
         *,
         model: str,
         case: EvaluationCase,
         answer: str,
-        grader: JudgeGrader,
-    ) -> Judgment:
-        if grader.rubric != self.rubric.id:
+        rubric_id: str,
+    ) -> JudgeResponse:
+        """Return an ordinal response independent of any pass threshold."""
+        if rubric_id != self.rubric.id:
             raise JudgeEvaluationError(
-                f"Judge grader requests rubric {grader.rubric!r}, but {self.rubric.id!r} is loaded."
+                f"Judge grader requests rubric {rubric_id!r}, but {self.rubric.id!r} is loaded."
             )
         messages = [
             {"role": "system", "content": self.rubric.system_prompt()},
@@ -143,12 +151,32 @@ class JudgeEvaluator:
             schema=JudgeResponse.model_json_schema(),
         )
         try:
-            response = JudgeResponse.model_validate(payload)
+            return JudgeResponse.model_validate(payload)
         except ValidationError as exc:
             raise JudgeEvaluationError(f"Judge returned an invalid score response: {exc}") from exc
+
+    @staticmethod
+    def judgment(response: JudgeResponse, grader: JudgeGrader) -> Judgment:
+        """Apply a grader's pass threshold to a reusable ordinal response."""
         return Judgment(
             grader_type="judge",
             passed=response.score >= grader.minimum_score,
             score=float(response.score),
             rationale=response.rationale,
         )
+
+    async def evaluate(
+        self,
+        *,
+        model: str,
+        case: EvaluationCase,
+        answer: str,
+        grader: JudgeGrader,
+    ) -> Judgment:
+        response = await self.score(
+            model=model,
+            case=case,
+            answer=answer,
+            rubric_id=grader.rubric,
+        )
+        return self.judgment(response, grader)

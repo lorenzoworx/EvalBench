@@ -46,6 +46,25 @@ function jsonResponse(payload: unknown, status = 200): Response {
       undefined,
     );
   });
+
+  it("includes an independent judge model when one is configured", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ id: "run", status: "pending" }, 202));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await startRun("judge-suite", "qwen3:4b", "gemma3:4b");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/runs",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          suite_id: "judge-suite",
+          model: "qwen3:4b",
+          judge_model: "gemma3:4b",
+        }),
+      }),
+    );
+  });
 }
 
 describe("API client", () => {

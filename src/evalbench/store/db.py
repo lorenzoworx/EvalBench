@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import NamedTuple
 
+from evalbench.judge import JudgeResponse
 from evalbench.models import CaseResult, EvaluationCase, Generation, Judgment, RunSummary
 
 
@@ -40,15 +41,18 @@ class Database:
         schema_path = Path(__file__).with_name("schema.sql")
         with self.connect() as connection:
             connection.executescript(schema_path.read_text(encoding="utf-8"))
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+            if "judge_model" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN judge_model TEXT")
 
     def create_run(self, run: RunSummary) -> None:
         with self.connect() as connection:
             connection.execute(
                 """INSERT INTO runs (
-                    id, suite_name, suite_version, model, provider, status,
+                    id, suite_name, suite_version, model, provider, judge_model, status,
                     created_at, completed_at, completed_cases, total_cases,
                     accuracy, ci_low, ci_high, error
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 self._run_values(run),
             )
 
@@ -56,7 +60,7 @@ class Database:
         with self.connect() as connection:
             cursor = connection.execute(
                 """UPDATE runs SET
-                    suite_name=?, suite_version=?, model=?, provider=?, status=?,
+                    suite_name=?, suite_version=?, model=?, provider=?, judge_model=?, status=?,
                     created_at=?, completed_at=?, completed_cases=?, total_cases=?,
                     accuracy=?, ci_low=?, ci_high=?, error=?
                 WHERE id=?""",
@@ -104,6 +108,22 @@ class Database:
                 """INSERT INTO generation_cache (request_hash, generation, created_at)
                 VALUES (?, ?, ?) ON CONFLICT(request_hash) DO NOTHING""",
                 (request_hash, stored.model_dump_json(), datetime.now(UTC).isoformat()),
+            )
+
+    def get_cached_judge_response(self, request_hash: str) -> JudgeResponse | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT response FROM judge_cache WHERE request_hash=?",
+                (request_hash,),
+            ).fetchone()
+        return None if row is None else JudgeResponse.model_validate_json(row["response"])
+
+    def put_cached_judge_response(self, request_hash: str, response: JudgeResponse) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                """INSERT INTO judge_cache (request_hash, response, created_at)
+                VALUES (?, ?, ?) ON CONFLICT(request_hash) DO NOTHING""",
+                (request_hash, response.model_dump_json(), datetime.now(UTC).isoformat()),
             )
 
     def save_case_result(self, run_id: str, case: EvaluationCase, result: CaseResult) -> None:
@@ -203,6 +223,7 @@ class Database:
             run.suite_version,
             run.model,
             run.provider,
+            run.judge_model,
             run.status,
             run.created_at.isoformat(),
             run.completed_at.isoformat() if run.completed_at else None,

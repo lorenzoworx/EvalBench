@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from evalbench.cache import generation_request_hash
+from evalbench.cache import generation_request_hash, judge_request_hash
+from evalbench.judge import load_rubric
 from evalbench.models import EvaluationCase, Generation, GenerationSettings
 from evalbench.store import Database
 
@@ -56,6 +57,45 @@ def test_non_generation_metadata_does_not_invalidate_hash() -> None:
 def test_hash_is_deterministic_sha256() -> None:
     assert request_hash() == request_hash(make_case())
     assert len(request_hash()) == 64
+
+
+def judge_hash(
+    case: EvaluationCase | None = None,
+    *,
+    model: str = "gemma3:4b",
+    answer: str = "A candidate answer.",
+    schema: str = "ollama-chat-v1",
+    rubric_version: str = "1.0.0-calibration",
+) -> str:
+    rubric = load_rubric().model_copy(update={"version": rubric_version})
+    return judge_request_hash(
+        rubric=rubric,
+        judge_model=model,
+        case=case or make_case(),
+        answer=answer,
+        provider_schema_version=schema,
+    )
+
+
+@pytest.mark.parametrize(
+    "changed_hash",
+    [
+        judge_hash(model="other-judge"),
+        judge_hash(answer="A different answer."),
+        judge_hash(make_case(id="other-case")),
+        judge_hash(make_case(prompt="A changed evaluation prompt.")),
+        judge_hash(make_case(expected="A changed reference.")),
+        judge_hash(schema="ollama-chat-v2"),
+        judge_hash(rubric_version="1.0.1"),
+    ],
+)
+def test_every_judge_input_invalidates_hash(changed_hash: str) -> None:
+    assert changed_hash != judge_hash()
+
+
+def test_judge_hash_is_deterministic_sha256() -> None:
+    assert judge_hash() == judge_hash()
+    assert len(judge_hash()) == 64
 
 
 @pytest.fixture

@@ -4,8 +4,9 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
 
-from evalbench.cache import generation_request_hash
-from evalbench.graders import grade_case, passed_all_primary
+from evalbench.cache import generation_request_hash, judge_request_hash
+from evalbench.graders import grade, passed_all_primary
+from evalbench.judge import JudgeEvaluator
 from evalbench.metrics import bootstrap_accuracy_ci, compare_paired_results, summarize_results
 from evalbench.models import CaseResult, EvaluationSuite, RunComparison, RunMetrics, RunSummary
 from evalbench.providers import Provider
@@ -15,9 +16,15 @@ from evalbench.store import Database
 class RunService:
     """Orchestrate deterministic evaluation independently of its interface."""
 
-    def __init__(self, database: Database, provider: Provider | None = None) -> None:
+    def __init__(
+        self,
+        database: Database,
+        provider: Provider | None = None,
+        judge_evaluator: JudgeEvaluator | None = None,
+    ) -> None:
         self.database = database
         self.provider = provider
+        self.judge_evaluator = judge_evaluator
         self.database.initialize()
 
     async def run(
@@ -27,6 +34,7 @@ class RunService:
         *,
         provider_name: str,
         run_id: str | None = None,
+        judge_model: str | None = None,
         should_cancel: Callable[[], bool] | None = None,
     ) -> RunSummary:
         if self.provider is None:
@@ -36,6 +44,7 @@ class RunService:
             model,
             provider_name=provider_name,
             run_id=run_id,
+            judge_model=judge_model,
         )
         return await self.execute(run, suite, should_cancel=should_cancel)
 
@@ -46,6 +55,7 @@ class RunService:
         *,
         provider_name: str,
         run_id: str | None = None,
+        judge_model: str | None = None,
     ) -> RunSummary:
         """Persist a pending run before asynchronous execution begins."""
         run = RunSummary(
@@ -54,6 +64,11 @@ class RunService:
             suite_version=suite.version,
             model=model,
             provider=provider_name,
+            judge_model=(
+                judge_model
+                if any(spec.type == "judge" for case in suite.cases for spec in case.graders)
+                else None
+            ),
             status="pending",
             total_cases=len(suite.cases),
         )
@@ -81,18 +96,40 @@ class RunService:
             if should_cancel is not None and should_cancel():
                 return self._cancel(run, outcomes)
 
-            unsupported = [
-                case.id
-                for case in suite.cases
-                if any(spec.type == "judge" for spec in case.graders)
+            judge_specs = [
+                spec for case in suite.cases for spec in case.graders if spec.type == "judge"
             ]
-            if unsupported:
+            if judge_specs and (self.judge_evaluator is None or run.judge_model is None):
+                affected = [
+                    case.id
+                    for case in suite.cases
+                    if any(spec.type == "judge" for spec in case.graders)
+                ]
                 raise ValueError(
                     "Judge graders require configured judge orchestration; "
-                    f"affected cases: {', '.join(unsupported)}."
+                    f"affected cases: {', '.join(affected)}."
                 )
+            if judge_specs and run.judge_model == run.model:
+                raise ValueError("Judge model must be independent from the evaluated model.")
+            if self.judge_evaluator is not None:
+                unsupported_rubrics = sorted(
+                    {
+                        spec.rubric
+                        for spec in judge_specs
+                        if spec.rubric != self.judge_evaluator.rubric.id
+                    }
+                )
+                if unsupported_rubrics:
+                    raise ValueError(
+                        "Configured judge does not provide rubrics: "
+                        + ", ".join(unsupported_rubrics)
+                    )
 
             await provider.preflight(run.model)
+            if judge_specs:
+                if self.judge_evaluator is None or run.judge_model is None:
+                    raise AssertionError("judge configuration was validated above")
+                await self.judge_evaluator.preflight(run.judge_model)
 
             for case in suite.cases:
                 if should_cancel is not None and should_cancel():
@@ -107,7 +144,30 @@ class RunService:
                     generation = await provider.generate(run.model, case)
                     self.database.put_cached_generation(request_hash, generation)
 
-                judgments = grade_case(case, generation.text)
+                judgments = []
+                for spec in case.graders:
+                    if spec.type != "judge":
+                        judgments.append(grade(case, spec, generation.text))
+                        continue
+                    if self.judge_evaluator is None or run.judge_model is None:
+                        raise AssertionError("judge configuration was validated above")
+                    request_hash = judge_request_hash(
+                        rubric=self.judge_evaluator.rubric,
+                        judge_model=run.judge_model,
+                        case=case,
+                        answer=generation.text,
+                        provider_schema_version=self.judge_evaluator.provider.schema_version,
+                    )
+                    response = self.database.get_cached_judge_response(request_hash)
+                    if response is None:
+                        response = await self.judge_evaluator.score(
+                            model=run.judge_model,
+                            case=case,
+                            answer=generation.text,
+                            rubric_id=spec.rubric,
+                        )
+                        self.database.put_cached_judge_response(request_hash, response)
+                    judgments.append(self.judge_evaluator.judgment(response, spec))
                 passed = passed_all_primary(judgments)
                 result = CaseResult(
                     case_id=case.id,

@@ -115,6 +115,7 @@ class SuiteSummary(BaseModel):
 class RunRequest(BaseModel):
     suite_id: str = Field(min_length=1)
     model: str = Field(min_length=1)
+    judge_model: str | None = Field(default=None, min_length=1)
 
 
 class RunAccepted(BaseModel):
@@ -204,6 +205,7 @@ class RunSummary(BaseModel):
     suite_version: str
     model: str
     provider: str
+    judge_model: str | None = None
     status: Literal["pending", "running", "completed", "failed", "cancelled", "interrupted"]
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None

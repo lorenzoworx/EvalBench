@@ -10,6 +10,7 @@ const baseRun = {
   suite_name: "Core Assistant",
   suite_version: "1.0",
   provider: "ollama",
+  judge_model: null,
   status: "completed" as const,
   created_at: "2026-09-15T15:00:00Z",
   completed_at: "2026-09-15T15:03:00Z",

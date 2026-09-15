@@ -19,6 +19,7 @@ const runs = [
     suite_version: "1.0",
     model: "qwen3:4b",
     provider: "ollama",
+    judge_model: null,
     status: "completed",
     created_at: "2026-09-15T15:00:00Z",
     completed_at: "2026-09-15T15:03:00Z",

@@ -2,12 +2,14 @@ import asyncio
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from evalbench.api import create_app, get_database
 from evalbench.jobs import RunCoordinator
+from evalbench.judge import JudgeEvaluator
 from evalbench.models import CaseResult, EvaluationCase, Generation, RunSummary
 from evalbench.providers import ProviderError, ReplayProvider
 from evalbench.store import Database
@@ -31,6 +33,40 @@ cases:
 """,
         encoding="utf-8",
     )
+
+
+def write_judge_suite(directory: Path) -> None:
+    directory.mkdir(exist_ok=True)
+    (directory / "judge.yaml").write_text(
+        """name: Judge Suite
+version: "1"
+cases:
+  - id: judged
+    category: reasoning
+    prompt: Explain the answer.
+    graders: [{type: judge, minimum_score: 2}]
+""",
+        encoding="utf-8",
+    )
+
+
+class ApiJudgeProvider:
+    schema_version = "judge-api-fixture-v1"
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    async def preflight(self, model: str) -> None:
+        self.models.append(model)
+
+    async def structured_chat(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {"score": 2, "rationale": "The response fully addresses the prompt."}
 
 
 def make_case(case_id: str = "one") -> EvaluationCase:
@@ -325,6 +361,37 @@ async def test_models_and_background_run_completion(tmp_path: Path) -> None:
     assert started.json()["status"] == "pending"
     assert completed.json()["status"] == "completed"
     assert completed.json()["completed_cases"] == 2
+
+
+async def test_background_run_executes_configured_independent_judge(tmp_path: Path) -> None:
+    suite_directory = tmp_path / "suites"
+    write_judge_suite(suite_directory)
+    judge_provider = ApiJudgeProvider()
+    app = create_app(
+        database_path=tmp_path / "runs.db",
+        suite_directory=suite_directory,
+        provider=ReplayProvider({"judged": "A complete answer."}, model_names=("target",)),
+        provider_name="replay",
+        judge_evaluator=JudgeEvaluator(judge_provider),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        started = await client.post(
+            "/api/runs",
+            json={"suite_id": "judge", "model": "target", "judge_model": "gemma3:4b"},
+        )
+        await app.state.coordinator.wait_until_idle()
+        run_id = started.json()["id"]
+        detail = await client.get(f"/api/runs/{run_id}")
+        results = await client.get(f"/api/runs/{run_id}/results")
+
+    assert started.status_code == 202
+    assert detail.json()["judge_model"] == "gemma3:4b"
+    assert detail.json()["status"] == "completed"
+    assert results.json()[0]["judgments"][0]["score"] == 2
+    assert judge_provider.models == ["gemma3:4b"]
 
 
 class BlockingProvider:

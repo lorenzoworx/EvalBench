@@ -8,6 +8,7 @@ from typing import Annotated, cast
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 
 from evalbench.jobs import ActiveRunError, RunCoordinator
+from evalbench.judge import JudgeEvaluator
 from evalbench.models import (
     CancellationAccepted,
     CaseResult,
@@ -54,6 +55,7 @@ def create_app(
     provider: Provider | None = None,
     provider_name: str = "ollama",
     frontend_directory: str | Path | None = "frontend/dist",
+    judge_evaluator: JudgeEvaluator | None = None,
 ) -> FastAPI:
     """Build the local EvalBench API with explicit filesystem dependencies."""
     database = Database(database_path)
@@ -65,6 +67,13 @@ def create_app(
         database,
         selected_provider,
         provider_name=provider_name,
+        judge_evaluator=(
+            judge_evaluator
+            if judge_evaluator is not None
+            else JudgeEvaluator(selected_provider)
+            if isinstance(selected_provider, OllamaProvider)
+            else None
+        ),
     )
 
     @asynccontextmanager
@@ -116,7 +125,11 @@ def create_app(
     ) -> RunAccepted:
         suite = _require_suite(directory, request.suite_id)
         try:
-            run = await coordinator.start(suite, request.model)
+            run = await coordinator.start(
+                suite,
+                request.model,
+                judge_model=request.judge_model,
+            )
         except ActiveRunError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,

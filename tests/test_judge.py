@@ -9,9 +9,14 @@ from evalbench.models import EvaluationCase, JudgeGrader
 
 
 class RecordingStructuredProvider:
+    schema_version = "structured-fixture-v1"
+
     def __init__(self, response: dict[str, Any]) -> None:
         self.response = response
         self.calls: list[tuple[str, list[dict[str, str]], dict[str, Any]]] = []
+
+    async def preflight(self, model: str) -> None:
+        pass
 
     async def structured_chat(
         self,

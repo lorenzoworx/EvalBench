@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS runs (
     suite_version TEXT NOT NULL,
     model TEXT NOT NULL,
     provider TEXT NOT NULL,
+    judge_model TEXT,
     status TEXT NOT NULL CHECK (
         status IN ('pending', 'running', 'completed', 'failed', 'cancelled', 'interrupted')
     ),
@@ -47,5 +48,11 @@ CREATE TABLE IF NOT EXISTS judgments (
 CREATE TABLE IF NOT EXISTS generation_cache (
     request_hash TEXT PRIMARY KEY,
     generation TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS judge_cache (
+    request_hash TEXT PRIMARY KEY,
+    response TEXT NOT NULL,
     created_at TEXT NOT NULL
 );

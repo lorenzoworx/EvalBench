@@ -10,6 +10,7 @@ import uvicorn
 from pydantic import ValidationError
 
 from evalbench.api import create_app
+from evalbench.judge import JudgeEvaluator
 from evalbench.models import EvaluationSuite, Generation, RunSummary
 from evalbench.providers import OllamaProvider, ProviderError, ReplayProvider
 from evalbench.service import RunService
@@ -63,6 +64,7 @@ def run_evaluation(
         "results/evalbench.db"
     ),
     model: Annotated[str | None, typer.Option("--model")] = None,
+    judge_model: Annotated[str | None, typer.Option("--judge-model")] = None,
 ) -> None:
     """Evaluate a suite through local Ollama or deterministic replay data."""
     try:
@@ -75,6 +77,7 @@ def run_evaluation(
                 provider_name=provider_name,
                 replay_path=replay,
                 database_path=database_path,
+                judge_model=judge_model,
             )
         )
     except (
@@ -97,20 +100,40 @@ async def _execute_run(
     provider_name: Literal["ollama", "replay"],
     replay_path: Path | None,
     database_path: Path,
+    judge_model: str | None,
 ) -> RunSummary:
     if provider_name == "replay":
         if replay_path is None:
             raise ValueError("Replay runs require --replay PATH.")
         replay_provider = ReplayProvider(_load_replay(replay_path), model_names=(model,))
-        return await RunService(Database(database_path), replay_provider).run(
-            suite, model, provider_name="replay"
-        )
+        if judge_model is None:
+            return await RunService(Database(database_path), replay_provider).run(
+                suite, model, provider_name="replay"
+            )
+        async with OllamaProvider() as judge_provider:
+            return await RunService(
+                Database(database_path),
+                replay_provider,
+                JudgeEvaluator(judge_provider),
+            ).run(
+                suite,
+                model,
+                provider_name="replay",
+                judge_model=judge_model,
+            )
 
     if replay_path is not None:
         raise ValueError("--replay can only be used with --provider replay.")
     async with OllamaProvider() as ollama_provider:
-        return await RunService(Database(database_path), ollama_provider).run(
-            suite, model, provider_name="ollama"
+        return await RunService(
+            Database(database_path),
+            ollama_provider,
+            JudgeEvaluator(ollama_provider) if judge_model is not None else None,
+        ).run(
+            suite,
+            model,
+            provider_name="ollama",
+            judge_model=judge_model,
         )
 
 
