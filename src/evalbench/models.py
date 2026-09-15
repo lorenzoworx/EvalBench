@@ -153,6 +153,28 @@ class RunMetrics(BaseModel):
     tokens_per_second: float | None = Field(default=None, ge=0)
 
 
+class McNemarResult(BaseModel):
+    both_passed: int = Field(ge=0)
+    baseline_only_passed: int = Field(ge=0)
+    candidate_only_passed: int = Field(ge=0)
+    both_failed: int = Field(ge=0)
+    exact_p_value: float = Field(ge=0, le=1)
+    alpha: float = Field(gt=0, lt=1)
+    significant: bool
+
+
+class RunComparison(BaseModel):
+    baseline_run_id: str
+    candidate_run_id: str
+    case_count: int = Field(gt=0)
+    baseline_accuracy: float = Field(ge=0, le=1)
+    candidate_accuracy: float = Field(ge=0, le=1)
+    accuracy_delta: float = Field(ge=-1, le=1)
+    regressions: list[str]
+    improvements: list[str]
+    mcnemar: McNemarResult
+
+
 class RunSummary(BaseModel):
     id: str
     suite_name: str

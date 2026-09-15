@@ -1,6 +1,12 @@
 import pytest
 
-from evalbench.metrics import bootstrap_accuracy_ci, percentile, summarize_results
+from evalbench.metrics import (
+    bootstrap_accuracy_ci,
+    compare_paired_results,
+    exact_mcnemar_test,
+    percentile,
+    summarize_results,
+)
 from evalbench.models import CaseResult, Generation
 
 
@@ -98,3 +104,75 @@ def test_summary_handles_no_results_or_timing_metrics() -> None:
     assert untimed.latency_ms_p50 is None
     assert untimed.latency_ms_p95 is None
     assert untimed.tokens_per_second is None
+
+
+@pytest.mark.parametrize(
+    ("baseline", "candidate", "expected_counts", "expected_p_value"),
+    [
+        ([True, False], [True, False], (1, 0, 0, 1), 1.0),
+        ([True, True], [False, False], (0, 2, 0, 0), 0.5),
+        ([True] * 5, [False] * 5, (0, 5, 0, 0), 0.0625),
+        ([True] * 10, [False] * 10, (0, 10, 0, 0), 0.001953125),
+    ],
+)
+def test_exact_mcnemar_contingencies_and_two_sided_p_value(
+    baseline: list[bool],
+    candidate: list[bool],
+    expected_counts: tuple[int, int, int, int],
+    expected_p_value: float,
+) -> None:
+    test = exact_mcnemar_test(baseline, candidate)
+
+    assert (
+        test.both_passed,
+        test.baseline_only_passed,
+        test.candidate_only_passed,
+        test.both_failed,
+    ) == expected_counts
+    assert test.exact_p_value == expected_p_value
+    assert test.significant is (expected_p_value < 0.05)
+
+
+def test_exact_mcnemar_rejects_invalid_inputs() -> None:
+    with pytest.raises(ValueError, match="equal lengths"):
+        exact_mcnemar_test([True], [])
+    with pytest.raises(ValueError, match="alpha"):
+        exact_mcnemar_test([], [], alpha=1)
+
+
+def test_paired_comparison_reports_delta_regressions_and_improvements() -> None:
+    baseline = [
+        result("a", "test", True),
+        result("b", "test", True),
+        result("c", "test", False),
+        result("d", "test", False),
+    ]
+    candidate = [
+        result("d", "test", False),
+        result("c", "test", True),
+        result("b", "test", False),
+        result("a", "test", True),
+    ]
+
+    comparison = compare_paired_results("base", "candidate", baseline, candidate)
+
+    assert comparison.case_count == 4
+    assert comparison.baseline_accuracy == 0.5
+    assert comparison.candidate_accuracy == 0.5
+    assert comparison.accuracy_delta == 0
+    assert comparison.regressions == ["b"]
+    assert comparison.improvements == ["c"]
+    assert comparison.mcnemar.baseline_only_passed == 1
+    assert comparison.mcnemar.candidate_only_passed == 1
+
+
+def test_paired_comparison_requires_matching_unique_case_ids() -> None:
+    one = result("one", "test", True)
+    two = result("two", "test", False)
+
+    with pytest.raises(ValueError, match="at least one"):
+        compare_paired_results("base", "candidate", [], [])
+    with pytest.raises(ValueError, match="unique case IDs"):
+        compare_paired_results("base", "candidate", [one, one], [one, one])
+    with pytest.raises(ValueError, match="missing from candidate: one"):
+        compare_paired_results("base", "candidate", [one], [two])

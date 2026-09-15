@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 
 from evalbench.cache import generation_request_hash
 from evalbench.graders import grade_case, passed_all_primary
-from evalbench.metrics import bootstrap_accuracy_ci, summarize_results
-from evalbench.models import CaseResult, EvaluationSuite, RunMetrics, RunSummary
+from evalbench.metrics import bootstrap_accuracy_ci, compare_paired_results, summarize_results
+from evalbench.models import CaseResult, EvaluationSuite, RunComparison, RunMetrics, RunSummary
 from evalbench.providers import Provider
 from evalbench.store import Database
 
@@ -14,7 +14,7 @@ from evalbench.store import Database
 class RunService:
     """Orchestrate deterministic evaluation independently of its interface."""
 
-    def __init__(self, database: Database, provider: Provider) -> None:
+    def __init__(self, database: Database, provider: Provider | None = None) -> None:
         self.database = database
         self.provider = provider
         self.database.initialize()
@@ -27,6 +27,9 @@ class RunService:
         provider_name: str,
         run_id: str | None = None,
     ) -> RunSummary:
+        if self.provider is None:
+            raise RuntimeError("A provider is required to start an evaluation run.")
+        provider = self.provider
         run = RunSummary(
             id=run_id or str(uuid.uuid4()),
             suite_name=suite.name,
@@ -53,17 +56,17 @@ class RunService:
                     f"affected cases: {', '.join(unsupported)}."
                 )
 
-            await self.provider.preflight(model)
+            await provider.preflight(model)
 
             for case in suite.cases:
                 request_hash = generation_request_hash(
                     model=model,
                     case=case,
-                    provider_schema_version=self.provider.schema_version,
+                    provider_schema_version=provider.schema_version,
                 )
                 generation = self.database.get_cached_generation(request_hash)
                 if generation is None:
-                    generation = await self.provider.generate(model, case)
+                    generation = await provider.generate(model, case)
                     self.database.put_cached_generation(request_hash, generation)
 
                 judgments = grade_case(case, generation.text)
@@ -110,4 +113,61 @@ class RunService:
             raise KeyError(f"Run {run_id!r} does not exist.")
         return summarize_results(
             [record.result for record in self.database.list_case_results(run_id)]
+        )
+
+    def compare(
+        self,
+        baseline_run_id: str,
+        candidate_run_id: str,
+        *,
+        alpha: float = 0.05,
+    ) -> RunComparison:
+        if baseline_run_id == candidate_run_id:
+            raise ValueError("baseline and candidate must be different runs")
+
+        baseline_run = self.database.get_run(baseline_run_id)
+        if baseline_run is None:
+            raise KeyError(f"Baseline run {baseline_run_id!r} does not exist.")
+        candidate_run = self.database.get_run(candidate_run_id)
+        if candidate_run is None:
+            raise KeyError(f"Candidate run {candidate_run_id!r} does not exist.")
+        if baseline_run.status != "completed" or candidate_run.status != "completed":
+            raise ValueError("paired comparison requires two completed runs")
+        if (
+            baseline_run.suite_name,
+            baseline_run.suite_version,
+        ) != (
+            candidate_run.suite_name,
+            candidate_run.suite_version,
+        ):
+            raise ValueError("paired runs must use the same suite name and version")
+
+        baseline_records = self.database.list_case_results(baseline_run_id)
+        candidate_records = self.database.list_case_results(candidate_run_id)
+        for run, records in (
+            (baseline_run, baseline_records),
+            (candidate_run, candidate_records),
+        ):
+            if run.completed_cases != run.total_cases or len(records) != run.total_cases:
+                raise ValueError(f"Run {run.id!r} does not contain a complete result set.")
+
+        baseline_cases = {record.case.id: record.case for record in baseline_records}
+        candidate_cases = {record.case.id: record.case for record in candidate_records}
+        shared_case_ids = baseline_cases.keys() & candidate_cases.keys()
+        changed_cases = sorted(
+            case_id
+            for case_id in shared_case_ids
+            if baseline_cases[case_id] != candidate_cases[case_id]
+        )
+        if changed_cases:
+            raise ValueError(
+                "paired runs contain different snapshots for cases: " + ", ".join(changed_cases)
+            )
+
+        return compare_paired_results(
+            baseline_run_id,
+            candidate_run_id,
+            [record.result for record in baseline_records],
+            [record.result for record in candidate_records],
+            alpha=alpha,
         )

@@ -129,5 +129,22 @@ def list_runs(
     )
 
 
+@app.command("compare")
+def compare_runs(
+    baseline_run_id: Annotated[str, typer.Argument(help="Run ID used as the baseline.")],
+    candidate_run_id: Annotated[str, typer.Argument(help="Run ID evaluated as the candidate.")],
+    database_path: Annotated[Path, typer.Option("--database", dir_okay=False)] = Path(
+        "results/evalbench.db"
+    ),
+) -> None:
+    """Compare two completed runs over the same suite and case snapshots."""
+    try:
+        comparison = RunService(Database(database_path)).compare(baseline_run_id, candidate_run_id)
+    except (KeyError, ValueError) as exc:
+        typer.echo(f"Comparison failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(comparison.model_dump_json(indent=2))
+
+
 if __name__ == "__main__":
     app()

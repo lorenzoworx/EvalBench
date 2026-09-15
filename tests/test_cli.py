@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 
@@ -5,7 +6,10 @@ from typer.testing import CliRunner
 
 import evalbench.cli as cli_module
 from evalbench.cli import app
-from evalbench.models import EvaluationCase, Generation
+from evalbench.models import EvaluationCase, EvaluationSuite, Generation
+from evalbench.providers import ReplayProvider
+from evalbench.service import RunService
+from evalbench.store import Database
 
 runner = CliRunner()
 
@@ -218,3 +222,47 @@ def test_ollama_cli_run_uses_default_model_and_closes_client(tmp_path: Path, mon
     assert completed["model"] == "qwen3:0.6b"
     assert completed["provider"] == "ollama"
     assert fake.closed
+
+
+def test_compare_command_outputs_paired_statistics(tmp_path: Path) -> None:
+    database = tmp_path / "evalbench.db"
+    suite = EvaluationSuite(
+        name="tiny",
+        version="1",
+        cases=[
+            EvaluationCase(
+                id="one",
+                category="reasoning",
+                prompt="What is one plus one?",
+                expected="2",
+                graders=[{"type": "numeric"}],
+            )
+        ],
+    )
+    first = RunService(Database(database), ReplayProvider({"one": "2"}, model_names=("first",)))
+    second = RunService(Database(database), ReplayProvider({"one": "3"}, model_names=("second",)))
+
+    asyncio.run(first.run(suite, "first", provider_name="replay", run_id="base"))
+    asyncio.run(second.run(suite, "second", provider_name="replay", run_id="candidate"))
+
+    result = runner.invoke(
+        app,
+        ["compare", "base", "candidate", "--database", str(database)],
+    )
+
+    assert result.exit_code == 0
+    comparison = json.loads(result.stdout)
+    assert comparison["accuracy_delta"] == -1
+    assert comparison["regressions"] == ["one"]
+    assert comparison["improvements"] == []
+    assert comparison["mcnemar"]["exact_p_value"] == 1
+
+
+def test_compare_command_reports_invalid_run(tmp_path: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["compare", "missing", "also-missing", "--database", str(tmp_path / "empty.db")],
+    )
+
+    assert result.exit_code == 1
+    assert "Baseline run 'missing' does not exist" in result.output
