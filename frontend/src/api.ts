@@ -27,6 +27,57 @@ export interface RunStatus {
   error: string | null;
 }
 
+export interface RunSummary extends RunStatus {
+  suite_name: string;
+  suite_version: string;
+  model: string;
+  provider: string;
+  created_at: string;
+  completed_at: string | null;
+  accuracy: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+}
+
+export interface RunMetrics {
+  case_count: number;
+  accuracy: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  category_accuracy: Record<string, number>;
+  latency_ms_p50: number | null;
+  latency_ms_p95: number | null;
+  tokens_per_second: number | null;
+}
+
+export interface Generation {
+  text: string;
+  done_reason: string | null;
+  prompt_tokens: number | null;
+  output_tokens: number | null;
+  total_duration_ns: number | null;
+  eval_duration_ns: number | null;
+  cached: boolean;
+}
+
+export interface Judgment {
+  grader_type: string;
+  passed: boolean;
+  score: number;
+  rationale: string;
+  primary: boolean;
+}
+
+export interface CaseResult {
+  case_id: string;
+  category: string;
+  prompt: string;
+  expected: unknown | null;
+  generation: Generation;
+  judgments: Judgment[];
+  passed: boolean;
+}
+
 interface ErrorPayload {
   detail?: string;
 }
@@ -78,4 +129,16 @@ export function getRunStatus(runId: string): Promise<RunStatus> {
 
 export function cancelRun(runId: string): Promise<void> {
   return request(`/api/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+}
+
+export function listRuns(): Promise<RunSummary[]> {
+  return request<RunSummary[]>("/api/runs");
+}
+
+export function getRunMetrics(runId: string): Promise<RunMetrics> {
+  return request<RunMetrics>(`/api/runs/${encodeURIComponent(runId)}/metrics`);
+}
+
+export function listRunResults(runId: string): Promise<CaseResult[]> {
+  return request<CaseResult[]>(`/api/runs/${encodeURIComponent(runId)}/results`);
 }

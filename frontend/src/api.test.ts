@@ -1,10 +1,37 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, cancelRun, getRunStatus, listModels, listSuites, startRun } from "./api";
+import {
+  ApiError,
+  cancelRun,
+  getRunMetrics,
+  getRunStatus,
+  listModels,
+  listRunResults,
+  listRuns,
+  listSuites,
+  startRun,
+} from "./api";
 
 function jsonResponse(payload: unknown, status = 200): Response {
   return new Response(JSON.stringify(payload), {
     status,
     headers: { "Content-Type": "application/json" },
+  });
+
+  it("loads stored run summaries, metrics, and case evidence", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse([{ id: "run/one", status: "completed" }]))
+      .mockResolvedValueOnce(jsonResponse({ case_count: 60, accuracy: 0.8 }))
+      .mockResolvedValueOnce(jsonResponse([{ case_id: "reasoning-01", passed: true }]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await listRuns();
+    await getRunMetrics("run/one");
+    await listRunResults("run/one");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/runs", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/runs/run%2Fone/metrics", undefined);
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/runs/run%2Fone/results", undefined);
   });
 }
 

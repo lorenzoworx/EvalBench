@@ -8,6 +8,7 @@ import {
   startRun,
   SuiteSummary,
 } from "./api";
+import ResultsWorkspace from "./ResultsWorkspace";
 
 const TERMINAL_STATES = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -34,6 +35,7 @@ export default function App() {
   const [runError, setRunError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [resultsRefreshKey, setResultsRefreshKey] = useState(0);
 
   function applyOptions(availableModels: string[], availableSuites: SuiteSummary[]) {
     setModels(availableModels);
@@ -96,6 +98,9 @@ export default function App() {
           if (TERMINAL_STATES.has(status.status)) {
             window.clearInterval(interval);
             setCancelling(false);
+            if (status.status === "completed") {
+              setResultsRefreshKey((key) => key + 1);
+            }
           }
         })
         .catch((error: unknown) => {
@@ -312,6 +317,11 @@ export default function App() {
             )}
           </section>
         </div>
+
+        <ResultsWorkspace
+          preferredRunId={run?.status === "completed" ? run.id : null}
+          refreshKey={resultsRefreshKey}
+        />
 
         <footer>
           <span>SQLite persistence</span>

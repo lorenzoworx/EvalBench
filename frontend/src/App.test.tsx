@@ -3,8 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
   cancelRun: vi.fn(),
+  getRunMetrics: vi.fn(),
   getRunStatus: vi.fn(),
   listModels: vi.fn(),
+  listRunResults: vi.fn(),
+  listRuns: vi.fn(),
   listSuites: vi.fn(),
   startRun: vi.fn(),
 }));
@@ -27,6 +30,7 @@ describe("evaluation control", () => {
     vi.clearAllMocks();
     api.listModels.mockResolvedValue(["qwen3:0.6b", "qwen3:4b"]);
     api.listSuites.mockResolvedValue([suite]);
+    api.listRuns.mockResolvedValue([]);
     api.startRun.mockResolvedValue({ id: "run-123", status: "pending" });
     api.cancelRun.mockResolvedValue({ id: "run-123", cancellation_requested: true });
   });
