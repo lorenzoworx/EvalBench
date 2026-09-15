@@ -18,10 +18,10 @@ deterministic offline replay and direct local Ollama inference.
 - Seeded statistical summaries and exact paired McNemar comparisons.
 - A typed FastAPI read API for suites, stored runs, results, metrics, and comparisons.
 - Background API runs with single-run admission, polling state, and cooperative cancellation.
+- A responsive React control surface for model/suite selection, live progress, failures, and cancellation.
 - One shared run service used by both the CLI and web API.
 
-Background run control and the functional dashboard are later milestones and are
-intentionally absent today.
+Metrics, case-explorer, and paired-comparison dashboard views remain later slices.
 
 ## Setup
 
