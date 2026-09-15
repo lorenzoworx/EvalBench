@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import typer
 from pydantic import ValidationError
 
-from evalbench.models import Generation
-from evalbench.providers import ProviderError, ReplayProvider
+from evalbench.models import EvaluationSuite, Generation, RunSummary
+from evalbench.providers import OllamaProvider, ProviderError, ReplayProvider
 from evalbench.service import RunService
 from evalbench.store import Database
 from evalbench.suite import SuiteValidationError, load_suite
@@ -49,22 +49,31 @@ def validate_suite(
 
 
 @app.command("run")
-def run_replay(
-    replay: Annotated[Path, typer.Option("--replay", exists=True, dir_okay=False, readable=True)],
+def run_evaluation(
+    provider_name: Annotated[Literal["ollama", "replay"], typer.Option("--provider")] = "ollama",
+    replay: Annotated[
+        Path | None, typer.Option("--replay", exists=True, dir_okay=False, readable=True)
+    ] = None,
     suite_path: Annotated[
         Path, typer.Option("--suite", exists=True, dir_okay=False, readable=True)
     ] = Path("suites/core.yaml"),
     database_path: Annotated[Path, typer.Option("--database", dir_okay=False)] = Path(
         "results/evalbench.db"
     ),
-    model: Annotated[str, typer.Option("--model")] = "replay",
+    model: Annotated[str | None, typer.Option("--model")] = None,
 ) -> None:
-    """Evaluate a suite using recorded responses, with no model or network access."""
+    """Evaluate a suite through local Ollama or deterministic replay data."""
     try:
         suite = load_suite(suite_path)
-        provider = ReplayProvider(_load_replay(replay), model_names=(model,))
+        selected_model = model or ("replay" if provider_name == "replay" else "qwen3:0.6b")
         run = asyncio.run(
-            RunService(Database(database_path), provider).run(suite, model, provider_name="replay")
+            _execute_run(
+                suite=suite,
+                model=selected_model,
+                provider_name=provider_name,
+                replay_path=replay,
+                database_path=database_path,
+            )
         )
     except (
         OSError,
@@ -77,6 +86,30 @@ def run_replay(
         typer.echo(f"Run failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(run.model_dump_json(indent=2))
+
+
+async def _execute_run(
+    *,
+    suite: EvaluationSuite,
+    model: str,
+    provider_name: Literal["ollama", "replay"],
+    replay_path: Path | None,
+    database_path: Path,
+) -> RunSummary:
+    if provider_name == "replay":
+        if replay_path is None:
+            raise ValueError("Replay runs require --replay PATH.")
+        replay_provider = ReplayProvider(_load_replay(replay_path), model_names=(model,))
+        return await RunService(Database(database_path), replay_provider).run(
+            suite, model, provider_name="replay"
+        )
+
+    if replay_path is not None:
+        raise ValueError("--replay can only be used with --provider replay.")
+    async with OllamaProvider() as ollama_provider:
+        return await RunService(Database(database_path), ollama_provider).run(
+            suite, model, provider_name="ollama"
+        )
 
 
 @app.command("runs")

@@ -3,7 +3,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
+import evalbench.cli as cli_module
 from evalbench.cli import app
+from evalbench.models import EvaluationCase, Generation
 
 runner = CliRunner()
 
@@ -55,6 +57,8 @@ def test_replay_run_and_history_end_to_end(tmp_path: Path) -> None:
         app,
         [
             "run",
+            "--provider",
+            "replay",
             "--suite",
             str(suite),
             "--replay",
@@ -86,6 +90,8 @@ def test_replay_run_reports_missing_recording(tmp_path: Path) -> None:
         app,
         [
             "run",
+            "--provider",
+            "replay",
             "--suite",
             str(suite),
             "--replay",
@@ -107,7 +113,15 @@ def test_replay_requires_json_object(tmp_path: Path) -> None:
 
     result = runner.invoke(
         app,
-        ["run", "--suite", str(suite), "--replay", str(replay)],
+        [
+            "run",
+            "--provider",
+            "replay",
+            "--suite",
+            str(suite),
+            "--replay",
+            str(replay),
+        ],
     )
 
     assert result.exit_code == 1
@@ -122,6 +136,8 @@ def test_committed_smoke_fixture_exercises_offline_pipeline(tmp_path: Path) -> N
         app,
         [
             "run",
+            "--provider",
+            "replay",
             "--suite",
             str(project_root / "suites/smoke.yaml"),
             "--replay",
@@ -136,3 +152,69 @@ def test_committed_smoke_fixture_exercises_offline_pipeline(tmp_path: Path) -> N
     assert completed["status"] == "completed"
     assert completed["completed_cases"] == 6
     assert completed["accuracy"] == 1.0
+
+
+def test_replay_provider_requires_replay_path(tmp_path: Path) -> None:
+    suite = tmp_path / "tiny.yaml"
+    write_suite(suite)
+
+    result = runner.invoke(
+        app,
+        ["run", "--provider", "replay", "--suite", str(suite)],
+    )
+
+    assert result.exit_code == 1
+    assert "Replay runs require --replay PATH" in result.output
+
+
+def test_ollama_provider_rejects_replay_path(tmp_path: Path) -> None:
+    suite = tmp_path / "tiny.yaml"
+    replay = tmp_path / "responses.json"
+    write_suite(suite)
+    replay.write_text('{"one":"2"}', encoding="utf-8")
+
+    result = runner.invoke(
+        app,
+        ["run", "--provider", "ollama", "--suite", str(suite), "--replay", str(replay)],
+    )
+
+    assert result.exit_code == 1
+    assert "--replay can only be used with --provider replay" in result.output
+
+
+def test_ollama_cli_run_uses_default_model_and_closes_client(tmp_path: Path, monkeypatch) -> None:
+    class FakeOllamaProvider:
+        schema_version = "fake-ollama-v1"
+        closed = False
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            self.closed = True
+
+        async def models(self) -> list[str]:
+            return ["qwen3:0.6b"]
+
+        async def preflight(self, model: str) -> None:
+            assert model == "qwen3:0.6b"
+
+        async def generate(self, model: str, case: EvaluationCase) -> Generation:
+            return Generation(text="2", done_reason="stop")
+
+    fake = FakeOllamaProvider()
+    monkeypatch.setattr(cli_module, "OllamaProvider", lambda: fake)
+    suite = tmp_path / "tiny.yaml"
+    database = tmp_path / "evalbench.db"
+    write_suite(suite)
+
+    result = runner.invoke(
+        app,
+        ["run", "--provider", "ollama", "--suite", str(suite), "--database", str(database)],
+    )
+
+    assert result.exit_code == 0
+    completed = json.loads(result.stdout)
+    assert completed["model"] == "qwen3:0.6b"
+    assert completed["provider"] == "ollama"
+    assert fake.closed

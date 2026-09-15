@@ -1,8 +1,8 @@
 # EvalBench
 
 EvalBench is an explainable evaluation workbench for local language models. It is
-being built in small, verified milestones; the current implementation provides a
-complete deterministic offline pipeline before Ollama is introduced.
+being built in small, verified milestones; the current implementation supports both
+deterministic offline replay and direct local Ollama inference.
 
 ## Current capabilities
 
@@ -12,6 +12,7 @@ complete deterministic offline pipeline before Ollama is introduced.
 - Exact, numeric, contains-all, JSON Schema, length, and refusal graders with
   evidence-based rationales.
 - A provider protocol and deterministic replay provider for network-free tests.
+- Direct non-streaming Ollama inference with local model preflight checks.
 - SQLite storage for runs, immutable case snapshots, generations, and judgments.
 - Content-addressed generation caching keyed by the complete inference request.
 - One shared run service used by the CLI and future web API.
@@ -41,6 +42,7 @@ network access:
 ```bash
 evalbench suite validate suites/smoke.yaml
 evalbench run \
+  --provider replay \
   --suite suites/smoke.yaml \
   --replay examples/smoke-responses.json \
   --database results/evalbench.db
@@ -49,6 +51,24 @@ evalbench runs --database results/evalbench.db
 
 The run should complete six cases with `accuracy` equal to `1.0`. Running it again
 uses the persistent generation cache; stored case results identify cache hits.
+
+## Ollama runs
+
+With Ollama already running and a model already downloaded:
+
+```bash
+ollama serve
+ollama pull qwen3:0.6b
+evalbench run \
+  --provider ollama \
+  --model qwen3:0.6b \
+  --suite suites/core.yaml \
+  --database results/evalbench.db
+```
+
+EvalBench connects only to `127.0.0.1:11434`, performs non-streaming chat calls,
+and records Ollama's finish reason, token counts, total duration, and evaluation
+duration. No hosted provider or API key is used.
 
 Validate the full suite independently:
 
@@ -62,7 +82,8 @@ evalbench suite validate suites/core.yaml
 suite YAML
     │
     ▼
-Pydantic validation ──► RunService ──► Provider protocol ──► ReplayProvider
+Pydantic validation ──► RunService ──► Provider protocol ──┬─► ReplayProvider
+                            │                              └─► OllamaProvider
                             │                 │
                             │                 └── generation request hash
                             │                              │
