@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from evalbench.cache import rubric_content_hash
-from evalbench.judge import JudgeRubric, load_rubric
+from evalbench.cache import judge_request_hash, rubric_content_hash
+from evalbench.judge import JudgeEvaluator, JudgeResponse, JudgeRubric, load_rubric
+from evalbench.metrics import bootstrap_kappa_ci, ordinal_confusion_matrix, quadratic_weighted_kappa
+from evalbench.models import EvaluationCase
 from evalbench.service import RunService
 from evalbench.store import Database, StoredCaseResult
 
@@ -42,6 +45,9 @@ class StudyExample(BaseModel):
     answer: str
     human_score: Literal[0, 1, 2] | None = None
     labeled_at: datetime | None = None
+    judge_score: Literal[0, 1, 2] | None = None
+    judge_rationale: str | None = None
+    judged_at: datetime | None = None
 
 
 class JudgeStudy(BaseModel):
@@ -55,6 +61,8 @@ class JudgeStudy(BaseModel):
     sample_size: int = Field(gt=0)
     source_runs: list[StudyRun]
     examples: list[StudyExample]
+    judge_model: str | None = None
+    judge_provider_schema_version: str | None = None
 
     @model_validator(mode="after")
     def consistent_manifest(self) -> JudgeStudy:
@@ -99,7 +107,58 @@ class JudgeStudy(BaseModel):
             for example in self.examples
         ):
             raise ValueError("human score and labeled timestamp must be recorded together")
+        if (self.judge_model is None) != (self.judge_provider_schema_version is None):
+            raise ValueError("judge model and provider schema provenance must be recorded together")
+        if any(
+            len(
+                {
+                    example.judge_score is None,
+                    example.judge_rationale is None,
+                    example.judged_at is None,
+                }
+            )
+            != 1
+            for example in self.examples
+        ):
+            raise ValueError("judge score, rationale, and timestamp must be recorded together")
+        has_judge_scores = any(example.judge_score is not None for example in self.examples)
+        if has_judge_scores and not self.judge_model:
+            raise ValueError("scored examples require judge provenance")
         return self
+
+
+class CategoryAgreement(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    example_count: int = Field(gt=0)
+    raw_agreement: float = Field(ge=0, le=1)
+    quadratic_weighted_kappa: float | None = Field(default=None, ge=-1, le=1)
+    confusion_matrix: list[list[int]]
+
+
+class StudyAgreementReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["judge-report-v1"] = "judge-report-v1"
+    study_schema_version: Literal["judge-study-v1"]
+    split: StudySplit
+    rubric_id: str
+    rubric_version: str
+    rubric_content_sha256: str
+    judge_model: str
+    source_runs: list[StudyRun]
+    example_count: int = Field(gt=0)
+    bootstrap_samples: int = Field(gt=0)
+    bootstrap_seed: int
+    confidence: float = Field(gt=0, lt=1)
+    raw_agreement: float = Field(ge=0, le=1)
+    quadratic_weighted_kappa: float | None = Field(default=None, ge=-1, le=1)
+    kappa_ci_low: float | None = Field(default=None, ge=-1, le=1)
+    kappa_ci_high: float | None = Field(default=None, ge=-1, le=1)
+    confusion_labels: list[Literal[0, 1, 2]]
+    confusion_matrix: list[list[int]]
+    category_breakdown: dict[str, CategoryAgreement]
+    limitations: list[str]
 
 
 def build_judge_study(
@@ -242,6 +301,15 @@ def save_study(path: str | Path, study: JudgeStudy) -> None:
     temporary.replace(study_path)
 
 
+def save_agreement_report(path: str | Path, report: StudyAgreementReport) -> None:
+    """Atomically persist a reproducible agreement report."""
+    report_path = Path(path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = report_path.with_suffix(f"{report_path.suffix}.tmp")
+    temporary.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    temporary.replace(report_path)
+
+
 def validate_study_rubric(study: JudgeStudy, rubric: JudgeRubric | None = None) -> JudgeRubric:
     selected = rubric or load_rubric()
     if (
@@ -250,6 +318,20 @@ def validate_study_rubric(study: JudgeStudy, rubric: JudgeRubric | None = None) 
         study.rubric_content_sha256,
     ) != (selected.id, selected.version, rubric_content_hash(selected)):
         raise StudyValidationError("study rubric provenance does not match the current rubric")
+    return selected
+
+
+def validate_study_split(
+    study: JudgeStudy,
+    split: StudySplit,
+    rubric: JudgeRubric | None = None,
+) -> JudgeRubric:
+    """Validate rubric provenance and keep holdout sealed during calibration."""
+    selected = validate_study_rubric(study, rubric)
+    if split == "holdout" and selected.status != "frozen":
+        raise StudyValidationError(
+            "freeze the calibrated rubric before using the untouched holdout split"
+        )
     return selected
 
 
@@ -276,3 +358,205 @@ def record_human_score(
     if not found:
         raise StudyValidationError(f"Study sample {sample_id!r} does not exist")
     return study.model_copy(update={"examples": examples})
+
+
+def record_judge_response(
+    study: JudgeStudy,
+    sample_id: str,
+    response: JudgeResponse,
+    *,
+    judge_model: str,
+    provider_schema_version: str,
+    judged_at: datetime | None = None,
+) -> JudgeStudy:
+    """Attach one judge response while enforcing consistent inference provenance."""
+    if study.judge_model not in (None, judge_model):
+        raise StudyValidationError(
+            f"study was scored with judge model {study.judge_model!r}, not {judge_model!r}"
+        )
+    if study.judge_provider_schema_version not in (None, provider_schema_version):
+        raise StudyValidationError("study was scored with a different judge provider schema")
+    found = False
+    examples = []
+    for example in study.examples:
+        if example.sample_id == sample_id:
+            found = True
+            examples.append(
+                example.model_copy(
+                    update={
+                        "judge_score": response.score,
+                        "judge_rationale": response.rationale,
+                        "judged_at": judged_at or datetime.now(UTC),
+                    }
+                )
+            )
+        else:
+            examples.append(example)
+    if not found:
+        raise StudyValidationError(f"Study sample {sample_id!r} does not exist")
+    return study.model_copy(
+        update={
+            "examples": examples,
+            "judge_model": judge_model,
+            "judge_provider_schema_version": provider_schema_version,
+        }
+    )
+
+
+async def score_study_split(
+    study: JudgeStudy,
+    split: StudySplit,
+    *,
+    database: Database,
+    evaluator: JudgeEvaluator,
+    judge_model: str,
+    on_progress: Callable[[JudgeStudy, int, int], None] | None = None,
+) -> JudgeStudy:
+    """Score one preassigned split, reusing the content-addressed judge cache."""
+    rubric = validate_study_split(study, split, evaluator.rubric)
+    if judge_model in {run.model for run in study.source_runs}:
+        raise StudyValidationError("judge model must be independent from both target models")
+    if study.judge_model not in (None, judge_model):
+        raise StudyValidationError(
+            f"study was scored with judge model {study.judge_model!r}, not {judge_model!r}"
+        )
+    schema_version = evaluator.provider.schema_version
+    if study.judge_provider_schema_version not in (None, schema_version):
+        raise StudyValidationError("study was scored with a different judge provider schema")
+
+    pending = [
+        example
+        for example in study.examples
+        if example.split == split and example.judge_score is None
+    ]
+    total = sum(example.split == split for example in study.examples)
+    completed = total - len(pending)
+    if not pending:
+        return study
+
+    database.initialize()
+    await evaluator.preflight(judge_model)
+    updated = study
+    for example in pending:
+        case = EvaluationCase(
+            id=example.case_id,
+            category=example.category,
+            prompt=example.prompt,
+            expected=example.expected,
+            graders=[{"type": "judge", "rubric": rubric.id}],
+        )
+        request_hash = judge_request_hash(
+            rubric=rubric,
+            judge_model=judge_model,
+            case=case,
+            answer=example.answer,
+            provider_schema_version=schema_version,
+        )
+        response = database.get_cached_judge_response(request_hash)
+        if response is None:
+            response = await evaluator.score(
+                model=judge_model,
+                case=case,
+                answer=example.answer,
+                rubric_id=rubric.id,
+            )
+            database.put_cached_judge_response(request_hash, response)
+        updated = record_judge_response(
+            updated,
+            example.sample_id,
+            response,
+            judge_model=judge_model,
+            provider_schema_version=schema_version,
+        )
+        completed += 1
+        if on_progress is not None:
+            on_progress(updated, completed, total)
+    return updated
+
+
+def build_agreement_report(
+    study: JudgeStudy,
+    split: StudySplit,
+    *,
+    bootstrap_samples: int = 10_000,
+    bootstrap_seed: int = 42,
+    confidence: float = 0.95,
+    rubric: JudgeRubric | None = None,
+) -> StudyAgreementReport:
+    """Summarize complete human/judge pairs for exactly one preassigned split."""
+    validate_study_split(study, split, rubric)
+    examples = [example for example in study.examples if example.split == split]
+    missing_human = sum(example.human_score is None for example in examples)
+    missing_judge = sum(example.judge_score is None for example in examples)
+    if missing_human or missing_judge:
+        raise StudyValidationError(
+            f"{split} report requires complete scores: "
+            f"{missing_human} human and {missing_judge} judge scores are missing"
+        )
+    if study.judge_model is None:
+        raise StudyValidationError("study does not record judge model provenance")
+
+    human = [example.human_score for example in examples]
+    judged = [example.judge_score for example in examples]
+    if any(score is None for score in human) or any(score is None for score in judged):
+        raise AssertionError("complete-score validation guarantees ordinal values")
+    human_scores = [int(score) for score in human if score is not None]
+    judge_scores = [int(score) for score in judged if score is not None]
+    ci_low, ci_high = bootstrap_kappa_ci(
+        human_scores,
+        judge_scores,
+        samples=bootstrap_samples,
+        seed=bootstrap_seed,
+        confidence=confidence,
+    )
+    categories: dict[str, CategoryAgreement] = {}
+    for category in sorted({example.category for example in examples}):
+        category_examples = [example for example in examples if example.category == category]
+        category_human = [
+            int(example.human_score)
+            for example in category_examples
+            if example.human_score is not None
+        ]
+        category_judged = [
+            int(example.judge_score)
+            for example in category_examples
+            if example.judge_score is not None
+        ]
+        categories[category] = CategoryAgreement(
+            example_count=len(category_examples),
+            raw_agreement=sum(
+                expected == actual
+                for expected, actual in zip(category_human, category_judged, strict=True)
+            )
+            / len(category_examples),
+            quadratic_weighted_kappa=quadratic_weighted_kappa(category_human, category_judged),
+            confusion_matrix=ordinal_confusion_matrix(category_human, category_judged),
+        )
+
+    return StudyAgreementReport(
+        study_schema_version=study.schema_version,
+        split=split,
+        rubric_id=study.rubric_id,
+        rubric_version=study.rubric_version,
+        rubric_content_sha256=study.rubric_content_sha256,
+        judge_model=study.judge_model,
+        source_runs=study.source_runs,
+        example_count=len(examples),
+        bootstrap_samples=bootstrap_samples,
+        bootstrap_seed=bootstrap_seed,
+        confidence=confidence,
+        raw_agreement=sum(
+            expected == actual for expected, actual in zip(human_scores, judge_scores, strict=True)
+        )
+        / len(examples),
+        quadratic_weighted_kappa=quadratic_weighted_kappa(human_scores, judge_scores),
+        kappa_ci_low=ci_low,
+        kappa_ci_high=ci_high,
+        confusion_labels=[0, 1, 2],
+        confusion_matrix=ordinal_confusion_matrix(human_scores, judge_scores),
+        category_breakdown=categories,
+        limitations=[
+            "Human reference scores come from one labeler, so inter-rater reliability "
+            "cannot be estimated."
+        ],
+    )

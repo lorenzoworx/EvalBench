@@ -492,6 +492,112 @@ def test_judge_label_blocks_holdout_until_rubric_is_frozen(tmp_path: Path) -> No
     assert "freeze the calibrated rubric" in result.output
 
 
+def test_judge_score_and_report_commands_complete_calibration_study(
+    tmp_path: Path, monkeypatch
+) -> None:
+    class FakeJudgeProvider:
+        schema_version = "cli-study-judge-v1"
+
+        def __init__(self) -> None:
+            self.closed = False
+            self.calls = 0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc_value, traceback):
+            self.closed = True
+
+        async def preflight(self, model: str) -> None:
+            assert model == "gemma3:4b"
+
+        async def structured_chat(
+            self,
+            model: str,
+            *,
+            messages: list[dict[str, str]],
+            schema: dict[str, Any],
+        ) -> dict[str, Any]:
+            score = (0, 2)[self.calls]
+            self.calls += 1
+            return {"score": score, "rationale": f"Fixture score {score}."}
+
+    database = tmp_path / "evalbench.db"
+    study_path = tmp_path / "judge-study.json"
+    prepare_study_runs(database)
+    selected = runner.invoke(
+        app,
+        [
+            "judge",
+            "select",
+            "base",
+            "candidate",
+            "--database",
+            str(database),
+            "--output",
+            str(study_path),
+            "--sample-size",
+            "4",
+        ],
+    )
+    assert selected.exit_code == 0
+    labeled = runner.invoke(
+        app,
+        ["judge", "label", str(study_path)],
+        input="0\n1\n",
+    )
+    assert labeled.exit_code == 0
+
+    fake = FakeJudgeProvider()
+    monkeypatch.setattr(cli_module, "OllamaProvider", lambda: fake)
+    scored = runner.invoke(
+        app,
+        [
+            "judge",
+            "score",
+            str(study_path),
+            "--judge-model",
+            "gemma3:4b",
+            "--database",
+            str(database),
+        ],
+    )
+
+    assert scored.exit_code == 0
+    assert "Calibration judge scoring complete (2/2)" in scored.output
+    assert fake.calls == 2
+    assert fake.closed
+    stored = load_study(study_path)
+    assert sorted(
+        example.judge_score for example in stored.examples if example.split == "calibration"
+    ) == [0, 2]
+
+    report_path = tmp_path / "calibration-report.json"
+    reported = runner.invoke(
+        app,
+        [
+            "judge",
+            "report",
+            str(study_path),
+            "--bootstrap-samples",
+            "100",
+            "--seed",
+            "7",
+            "--output",
+            str(report_path),
+        ],
+    )
+
+    assert reported.exit_code == 0
+    report = json.loads(reported.stdout)
+    assert report["split"] == "calibration"
+    assert report["example_count"] == 2
+    assert report["bootstrap_samples"] == 100
+    assert sum(sum(row) for row in report["confusion_matrix"]) == 2
+    assert "one labeler" in report["limitations"][0]
+    assert json.loads(report_path.read_text(encoding="utf-8")) == report
+
+
 def test_serve_binds_only_to_localhost(tmp_path: Path, monkeypatch) -> None:
     class State:
         frontend_mounted = False

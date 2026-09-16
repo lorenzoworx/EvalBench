@@ -1,10 +1,12 @@
+import asyncio
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from evalbench.judge import load_rubric
+from evalbench.judge import JudgeEvaluator, JudgeResponse, load_rubric
 from evalbench.models import (
     CaseResult,
     EvaluationCase,
@@ -15,14 +17,38 @@ from evalbench.models import (
 from evalbench.store import Database
 from evalbench.study import (
     StudyValidationError,
+    build_agreement_report,
     build_judge_study,
     load_study,
     record_human_score,
+    record_judge_response,
     save_study,
+    score_study_split,
     validate_study_rubric,
 )
 
 CATEGORIES = ("reasoning", "structured", "instruction", "safety")
+
+
+class StudyJudgeProvider:
+    schema_version = "study-judge-v1"
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.preflight_models: list[str] = []
+
+    async def preflight(self, model: str) -> None:
+        self.preflight_models.append(model)
+
+    async def structured_chat(
+        self,
+        model: str,
+        *,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.calls += 1
+        return {"score": 2, "rationale": "Fully correct."}
 
 
 def study_database(tmp_path: Path, *, same_model: bool = False) -> Database:
@@ -142,3 +168,127 @@ def test_label_progress_round_trips_atomically_and_checks_rubric(tmp_path: Path)
         validate_study_rubric(loaded, changed)
     with pytest.raises(StudyValidationError, match="does not exist"):
         record_human_score(study, "missing", 1)
+
+
+def test_study_scoring_is_resumable_cached_and_independent(tmp_path: Path) -> None:
+    database = study_database(tmp_path)
+    study = build_judge_study(database, "baseline", "candidate", sample_size=4)
+    provider = StudyJudgeProvider()
+    evaluator = JudgeEvaluator(provider)
+    progress: list[tuple[int, int]] = []
+
+    scored = asyncio.run(
+        score_study_split(
+            study,
+            "calibration",
+            database=database,
+            evaluator=evaluator,
+            judge_model="gemma3:4b",
+            on_progress=lambda _study, completed, total: progress.append((completed, total)),
+        )
+    )
+
+    assert provider.calls == 2
+    assert provider.preflight_models == ["gemma3:4b"]
+    assert progress == [(1, 2), (2, 2)]
+    assert scored.judge_model == "gemma3:4b"
+    assert scored.judge_provider_schema_version == "study-judge-v1"
+    assert all(
+        example.judge_score == 2 for example in scored.examples if example.split == "calibration"
+    )
+    assert all(
+        example.judge_score is None for example in scored.examples if example.split == "holdout"
+    )
+
+    cached_copy = asyncio.run(
+        score_study_split(
+            study,
+            "calibration",
+            database=database,
+            evaluator=evaluator,
+            judge_model="gemma3:4b",
+        )
+    )
+    assert provider.calls == 2
+    assert [example.judge_score for example in cached_copy.examples] == [
+        example.judge_score for example in scored.examples
+    ]
+    assert cached_copy.judge_model == scored.judge_model
+
+    with pytest.raises(StudyValidationError, match="was scored with judge model"):
+        asyncio.run(
+            score_study_split(
+                scored,
+                "calibration",
+                database=database,
+                evaluator=evaluator,
+                judge_model="other-judge",
+            )
+        )
+
+    with pytest.raises(StudyValidationError, match="independent"):
+        asyncio.run(
+            score_study_split(
+                study,
+                "calibration",
+                database=database,
+                evaluator=evaluator,
+                judge_model="qwen3:0.6b",
+            )
+        )
+
+
+def test_agreement_report_is_reproducible_and_split_specific(tmp_path: Path) -> None:
+    study = build_judge_study(study_database(tmp_path), "baseline", "candidate")
+    calibration = [example for example in study.examples if example.split == "calibration"]
+    human_pattern = [0, 0, 1, 1, 2, 2]
+    judge_pattern = [0, 1, 1, 2, 2, 2]
+    for index, example in enumerate(calibration):
+        study = record_human_score(
+            study,
+            example.sample_id,
+            human_pattern[index % len(human_pattern)],
+        )
+        study = record_judge_response(
+            study,
+            example.sample_id,
+            JudgeResponse(
+                score=judge_pattern[index % len(judge_pattern)],
+                rationale="Fixture score.",
+            ),
+            judge_model="gemma3:4b",
+            provider_schema_version="study-judge-v1",
+        )
+
+    report = build_agreement_report(
+        study,
+        "calibration",
+        bootstrap_samples=500,
+        bootstrap_seed=9,
+    )
+    repeated = build_agreement_report(
+        study,
+        "calibration",
+        bootstrap_samples=500,
+        bootstrap_seed=9,
+    )
+
+    assert report == repeated
+    assert report.example_count == 30
+    assert report.raw_agreement == pytest.approx(2 / 3)
+    assert report.quadratic_weighted_kappa == pytest.approx(0.75)
+    assert report.confusion_labels == [0, 1, 2]
+    assert report.confusion_matrix == [[5, 5, 0], [0, 5, 5], [0, 0, 10]]
+    assert set(report.category_breakdown) == set(CATEGORIES)
+    assert report.kappa_ci_low is not None
+    assert report.kappa_ci_high is not None
+    assert "one labeler" in report.limitations[0]
+
+
+def test_agreement_report_requires_complete_scores_and_seals_holdout(tmp_path: Path) -> None:
+    study = build_judge_study(study_database(tmp_path), "baseline", "candidate")
+
+    with pytest.raises(StudyValidationError, match="complete scores"):
+        build_agreement_report(study, "calibration", bootstrap_samples=10)
+    with pytest.raises(StudyValidationError, match="freeze the calibrated rubric"):
+        build_agreement_report(study, "holdout", bootstrap_samples=10)

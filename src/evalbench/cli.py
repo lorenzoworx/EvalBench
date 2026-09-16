@@ -16,13 +16,17 @@ from evalbench.providers import OllamaProvider, ProviderError, ReplayProvider
 from evalbench.service import RunService
 from evalbench.store import Database
 from evalbench.study import (
+    JudgeStudy,
     StudySplit,
     StudyValidationError,
+    build_agreement_report,
     build_judge_study,
     load_study,
     record_human_score,
+    save_agreement_report,
     save_study,
-    validate_study_rubric,
+    score_study_split,
+    validate_study_split,
 )
 from evalbench.suite import SuiteValidationError, load_suite
 
@@ -228,11 +232,7 @@ def label_judge_examples(
     """Blindly score one study split, saving after every response."""
     try:
         study = load_study(path)
-        rubric = validate_study_rubric(study)
-        if split == "holdout" and rubric.status != "frozen":
-            raise StudyValidationError(
-                "freeze the calibrated rubric before labeling the untouched holdout split"
-            )
+        rubric = validate_study_split(study, split)
     except StudyValidationError as exc:
         typer.echo(f"Labeling failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
@@ -285,6 +285,91 @@ def label_judge_examples(
         completed += 1
         typer.echo(f"Saved {completed}/{total}.")
     typer.echo(f"{split.title()} labeling complete ({total}/{total}).")
+
+
+@judge_app.command("score")
+def score_judge_study(
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    judge_model: Annotated[str, typer.Option("--judge-model")] = "gemma3:4b",
+    database_path: Annotated[Path, typer.Option("--database", dir_okay=False)] = Path(
+        "results/evalbench.db"
+    ),
+    split: Annotated[StudySplit, typer.Option("--split")] = "calibration",
+) -> None:
+    """Score one study split with an independent local judge, saving each result."""
+    try:
+        asyncio.run(
+            _score_judge_study_file(
+                path=path,
+                split=split,
+                judge_model=judge_model,
+                database_path=database_path,
+            )
+        )
+    except (ProviderError, StudyValidationError, ValueError) as exc:
+        typer.echo(f"Judge scoring failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+async def _score_judge_study_file(
+    *,
+    path: Path,
+    split: StudySplit,
+    judge_model: str,
+    database_path: Path,
+) -> None:
+    study = load_study(path)
+    total = sum(example.split == split for example in study.examples)
+    completed_before = sum(
+        example.split == split and example.judge_score is not None for example in study.examples
+    )
+    async with OllamaProvider() as provider:
+        evaluator = JudgeEvaluator(provider)
+
+        def persist(updated_study: JudgeStudy, completed: int, expected: int) -> None:
+            save_study(path, updated_study)
+            typer.echo(f"Saved judge score {completed}/{expected}.")
+
+        await score_study_split(
+            study,
+            split,
+            database=Database(database_path),
+            evaluator=evaluator,
+            judge_model=judge_model,
+            on_progress=persist,
+        )
+    if completed_before == total:
+        typer.echo(f"{split.title()} judge scoring is already complete ({total}/{total}).")
+    else:
+        typer.echo(f"{split.title()} judge scoring complete ({total}/{total}).")
+
+
+@judge_app.command("report")
+def report_judge_study(
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    split: Annotated[StudySplit, typer.Option("--split")] = "calibration",
+    output: Annotated[Path | None, typer.Option("--output", dir_okay=False)] = None,
+    bootstrap_samples: Annotated[int, typer.Option("--bootstrap-samples", min=1)] = 10_000,
+    seed: Annotated[int, typer.Option("--seed")] = 42,
+) -> None:
+    """Report human/judge agreement for one complete, preassigned study split."""
+    if output is not None and output.exists():
+        typer.echo(f"Report already exists at {output}; choose a new output path.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        report = build_agreement_report(
+            load_study(path),
+            split,
+            bootstrap_samples=bootstrap_samples,
+            bootstrap_seed=seed,
+        )
+    except (StudyValidationError, ValueError) as exc:
+        typer.echo(f"Agreement report failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if output is not None:
+        save_agreement_report(output, report)
+        typer.echo(f"Saved {output}", err=True)
+    typer.echo(report.model_dump_json(indent=2))
 
 
 @app.command("serve")

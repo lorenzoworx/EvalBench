@@ -23,9 +23,11 @@ deterministic offline replay and direct local Ollama inference.
 - Paired-run dashboard comparisons with regressions, improvements, and exact McNemar results.
 - Versioned three-level judging with an independent Ollama model and content-addressed score cache.
 - Deterministic balanced study selection with blinded, resumable human labeling.
+- Cached study scoring plus reproducible agreement, weighted-kappa, confusion-matrix,
+  confidence-interval, and category reports.
 - One shared run service used by both the CLI and web API.
 
-Agreement statistics and the final validation report remain later slices.
+Rubric calibration, real holdout labels, and the published validation result remain later slices.
 
 ## Setup
 
@@ -93,6 +95,13 @@ evalbench judge select BASELINE_RUN_ID CANDIDATE_RUN_ID \
   --database results/evalbench.db \
   --output labels/judge-study.json
 evalbench judge label labels/judge-study.json --split calibration
+evalbench judge score labels/judge-study.json \
+  --split calibration \
+  --judge-model gemma3:4b \
+  --database results/evalbench.db
+evalbench judge report labels/judge-study.json \
+  --split calibration \
+  --output labels/calibration-report.json
 ```
 
 The study artifact records source provenance, rubric identity and content hash, seed,
@@ -100,6 +109,10 @@ randomized presentation order, and a preassigned 30/30 calibration/holdout split
 The labeler hides model identity and saves after every score, so rerunning it resumes
 where it stopped. Holdout labeling stays locked while the bundled rubric has
 `status: calibration`; calibrate and freeze the rubric before opening that split.
+Judge scoring is independently resumable and reuses the content-addressed score
+cache. The report records raw agreement, quadratic-weighted Cohen's kappa, a seeded
+bootstrap confidence interval, a human-row/judge-column confusion matrix, category
+breakdowns, source provenance, and the single-labeler limitation.
 
 ## Local web application
 

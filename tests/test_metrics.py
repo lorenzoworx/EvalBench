@@ -2,9 +2,12 @@ import pytest
 
 from evalbench.metrics import (
     bootstrap_accuracy_ci,
+    bootstrap_kappa_ci,
     compare_paired_results,
     exact_mcnemar_test,
+    ordinal_confusion_matrix,
     percentile,
+    quadratic_weighted_kappa,
     summarize_results,
 )
 from evalbench.models import CaseResult, Generation
@@ -66,6 +69,55 @@ def test_bootstrap_rejects_invalid_inputs(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         bootstrap_accuracy_ci(outcomes, **options)
+
+
+def test_ordinal_agreement_metrics_use_reference_rows_and_predicted_columns() -> None:
+    human = [0, 0, 1, 1, 2, 2]
+    judge = [0, 1, 1, 2, 2, 2]
+
+    assert ordinal_confusion_matrix(human, judge) == [
+        [1, 1, 0],
+        [0, 1, 1],
+        [0, 0, 2],
+    ]
+    assert quadratic_weighted_kappa(human, judge) == pytest.approx(0.75)
+    assert quadratic_weighted_kappa([2, 2], [2, 2]) is None
+
+
+def test_kappa_bootstrap_is_seeded_and_handles_degenerate_resamples() -> None:
+    human = [0, 0, 1, 1, 2, 2]
+    judge = [0, 1, 1, 2, 2, 2]
+
+    first = bootstrap_kappa_ci(human, judge, samples=500, seed=7)
+    second = bootstrap_kappa_ci(human, judge, samples=500, seed=7)
+
+    assert first == second
+    assert first[0] is not None and first[1] is not None
+    assert first[0] <= 0.75 <= first[1]
+    assert bootstrap_kappa_ci([1, 1], [1, 1], samples=10) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("reference", "predicted", "options", "message"),
+    [
+        ([], [], {}, "one rating pair"),
+        ([0], [], {}, "equal lengths"),
+        ([3], [0], {}, "unsupported"),
+        ([0], [0], {"samples": 0}, "samples"),
+        ([0], [0], {"confidence": 1.0}, "confidence"),
+    ],
+)
+def test_ordinal_metrics_reject_invalid_inputs(
+    reference: list[int],
+    predicted: list[int],
+    options: dict[str, float],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        if options:
+            bootstrap_kappa_ci(reference, predicted, **options)
+        else:
+            ordinal_confusion_matrix(reference, predicted)
 
 
 def test_summary_reports_accuracy_categories_latency_and_throughput() -> None:

@@ -8,6 +8,8 @@ from statistics import median
 
 from evalbench.models import CaseResult, McNemarResult, RunComparison, RunMetrics
 
+ORDINAL_SCORES = (0, 1, 2)
+
 
 def percentile(values: Sequence[float], probability: float) -> float | None:
     """Return a linearly interpolated percentile for a finite sequence."""
@@ -48,6 +50,93 @@ def bootstrap_accuracy_ci(
     if low is None or high is None:
         raise AssertionError("positive bootstrap samples must produce percentiles")
     return low, high
+
+
+def ordinal_confusion_matrix(
+    reference: Sequence[int],
+    predicted: Sequence[int],
+    *,
+    labels: Sequence[int] = ORDINAL_SCORES,
+) -> list[list[int]]:
+    """Count paired ordinal ratings with reference rows and predicted columns."""
+    if not reference:
+        raise ValueError("at least one rating pair is required")
+    if len(reference) != len(predicted):
+        raise ValueError("reference and predicted ratings must have equal lengths")
+    if len(set(labels)) != len(labels) or not labels:
+        raise ValueError("labels must be non-empty and unique")
+    label_index = {label: index for index, label in enumerate(labels)}
+    unsupported = sorted((set(reference) | set(predicted)) - set(labels))
+    if unsupported:
+        raise ValueError(f"unsupported ordinal ratings: {unsupported}")
+    matrix = [[0 for _ in labels] for _ in labels]
+    for expected, actual in zip(reference, predicted, strict=True):
+        matrix[label_index[expected]][label_index[actual]] += 1
+    return matrix
+
+
+def quadratic_weighted_kappa(
+    reference: Sequence[int],
+    predicted: Sequence[int],
+    *,
+    labels: Sequence[int] = ORDINAL_SCORES,
+) -> float | None:
+    """Compute quadratic-weighted Cohen's kappa for paired ordinal ratings."""
+    matrix = ordinal_confusion_matrix(reference, predicted, labels=labels)
+    count = len(reference)
+    scale = max(1, len(labels) - 1) ** 2
+    row_totals = [sum(row) for row in matrix]
+    column_totals = [
+        sum(matrix[row][column] for row in range(len(labels))) for column in range(len(labels))
+    ]
+    observed_disagreement = (
+        sum(
+            ((row - column) ** 2 / scale) * matrix[row][column]
+            for row in range(len(labels))
+            for column in range(len(labels))
+        )
+        / count
+    )
+    expected_disagreement = sum(
+        ((row - column) ** 2 / scale) * row_totals[row] * column_totals[column]
+        for row in range(len(labels))
+        for column in range(len(labels))
+    ) / (count * count)
+    if expected_disagreement == 0:
+        return None
+    return 1 - observed_disagreement / expected_disagreement
+
+
+def bootstrap_kappa_ci(
+    reference: Sequence[int],
+    predicted: Sequence[int],
+    *,
+    samples: int = 10_000,
+    seed: int = 42,
+    confidence: float = 0.95,
+) -> tuple[float | None, float | None]:
+    """Return a seeded paired-bootstrap interval, excluding undefined resamples."""
+    ordinal_confusion_matrix(reference, predicted)
+    if samples <= 0:
+        raise ValueError("samples must be positive")
+    if not 0 < confidence < 1:
+        raise ValueError("confidence must be between 0 and 1")
+
+    rng = random.Random(seed)
+    count = len(reference)
+    estimates: list[float] = []
+    for _ in range(samples):
+        indices = [rng.randrange(count) for _ in range(count)]
+        estimate = quadratic_weighted_kappa(
+            [reference[index] for index in indices],
+            [predicted[index] for index in indices],
+        )
+        if estimate is not None:
+            estimates.append(estimate)
+    if not estimates:
+        return None, None
+    tail = (1 - confidence) / 2
+    return percentile(estimates, tail), percentile(estimates, 1 - tail)
 
 
 def exact_mcnemar_test(
