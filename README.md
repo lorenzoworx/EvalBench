@@ -129,6 +129,10 @@ Freezing requires complete calibration labels and judge scores plus a completely
 untouched holdout. The study retains the calibration rubric hash and results while
 recording the frozen rubric separately for holdout scoring and reporting.
 
+See [Judge Validation Study Methodology](docs/judge-study-methodology.md) for the
+fixed sampling design, calibration firewall, statistical definitions, complete
+reproduction protocol, and interpretation limits.
+
 ## Local web application
 
 Build the frontend and start the integrated local server:
