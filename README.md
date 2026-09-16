@@ -22,9 +22,10 @@ deterministic offline replay and direct local Ollama inference.
 - Completed-run history with statistical metrics, category accuracy, and filterable case evidence.
 - Paired-run dashboard comparisons with regressions, improvements, and exact McNemar results.
 - Versioned three-level judging with an independent Ollama model and content-addressed score cache.
+- Deterministic balanced study selection with blinded, resumable human labeling.
 - One shared run service used by both the CLI and web API.
 
-Human labeling and agreement reporting remain later slices.
+Agreement statistics and the final validation report remain later slices.
 
 ## Setup
 
@@ -81,6 +82,24 @@ Validate the full suite independently:
 ```bash
 evalbench suite validate suites/core.yaml
 ```
+
+## Judge validation study
+
+After completing the same suite with two different target models, select a balanced,
+reproducible 60-output study:
+
+```bash
+evalbench judge select BASELINE_RUN_ID CANDIDATE_RUN_ID \
+  --database results/evalbench.db \
+  --output labels/judge-study.json
+evalbench judge label labels/judge-study.json --split calibration
+```
+
+The study artifact records source provenance, rubric identity and content hash, seed,
+randomized presentation order, and a preassigned 30/30 calibration/holdout split.
+The labeler hides model identity and saves after every score, so rerunning it resumes
+where it stopped. Holdout labeling stays locked while the bundled rubric has
+`status: calibration`; calibrate and freeze the rubric before opening that split.
 
 ## Local web application
 

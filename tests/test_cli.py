@@ -11,6 +11,7 @@ from evalbench.models import EvaluationCase, EvaluationSuite, Generation
 from evalbench.providers import ReplayProvider
 from evalbench.service import RunService
 from evalbench.store import Database
+from evalbench.study import load_study
 
 runner = CliRunner()
 
@@ -41,6 +42,53 @@ cases:
     graders: [{type: judge, minimum_score: 2}]
 """,
         encoding="utf-8",
+    )
+
+
+def prepare_study_runs(database_path: Path) -> None:
+    suite = EvaluationSuite(
+        name="study",
+        version="1",
+        cases=[
+            EvaluationCase(
+                id="reasoning",
+                category="reasoning",
+                prompt="Reason carefully.",
+                expected="A reasoned response.",
+                graders=[{"type": "exact"}],
+            ),
+            EvaluationCase(
+                id="safety",
+                category="safety",
+                prompt="Respond safely.",
+                expected="A safe response.",
+                graders=[{"type": "exact"}],
+            ),
+        ],
+    )
+    database = Database(database_path)
+    baseline = RunService(
+        database,
+        ReplayProvider(
+            {"reasoning": "First answer.", "safety": "First safe answer."},
+            model_names=("secret-model-a",),
+        ),
+    )
+    candidate = RunService(
+        database,
+        ReplayProvider(
+            {"reasoning": "Second answer.", "safety": "Second safe answer."},
+            model_names=("secret-model-b",),
+        ),
+    )
+    asyncio.run(baseline.run(suite, "secret-model-a", provider_name="replay", run_id="base"))
+    asyncio.run(
+        candidate.run(
+            suite,
+            "secret-model-b",
+            provider_name="replay",
+            run_id="candidate",
+        )
     )
 
 
@@ -339,6 +387,109 @@ def test_compare_command_reports_invalid_run(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert "Baseline run 'missing' does not exist" in result.output
+
+
+def test_judge_select_writes_a_balanced_study(tmp_path: Path) -> None:
+    database = tmp_path / "evalbench.db"
+    study_path = tmp_path / "judge-study.json"
+    prepare_study_runs(database)
+
+    result = runner.invoke(
+        app,
+        [
+            "judge",
+            "select",
+            "base",
+            "candidate",
+            "--database",
+            str(database),
+            "--output",
+            str(study_path),
+            "--sample-size",
+            "4",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "2 calibration and 2 holdout" in result.output
+    study = load_study(study_path)
+    assert study.sample_size == 4
+    assert {example.model for example in study.examples} == {
+        "secret-model-a",
+        "secret-model-b",
+    }
+
+
+def test_judge_label_is_blinded_and_resumes_after_each_score(tmp_path: Path) -> None:
+    database = tmp_path / "evalbench.db"
+    study_path = tmp_path / "judge-study.json"
+    prepare_study_runs(database)
+    selected = runner.invoke(
+        app,
+        [
+            "judge",
+            "select",
+            "base",
+            "candidate",
+            "--database",
+            str(database),
+            "--output",
+            str(study_path),
+            "--sample-size",
+            "4",
+        ],
+    )
+    assert selected.exit_code == 0
+
+    first_session = runner.invoke(app, ["judge", "label", str(study_path)], input="2\nq\n")
+
+    assert first_session.exit_code == 0
+    assert "Progress saved at 1/2" in first_session.output
+    assert "secret-model-a" not in first_session.output
+    assert "secret-model-b" not in first_session.output
+    calibration = [
+        example for example in load_study(study_path).examples if example.split == "calibration"
+    ]
+    assert sum(example.human_score is not None for example in calibration) == 1
+
+    resumed = runner.invoke(app, ["judge", "label", str(study_path)], input="1\n")
+
+    assert resumed.exit_code == 0
+    assert "Calibration labeling complete (2/2)" in resumed.output
+    calibration = [
+        example for example in load_study(study_path).examples if example.split == "calibration"
+    ]
+    assert sorted(example.human_score for example in calibration) == [1, 2]
+
+
+def test_judge_label_blocks_holdout_until_rubric_is_frozen(tmp_path: Path) -> None:
+    database = tmp_path / "evalbench.db"
+    study_path = tmp_path / "judge-study.json"
+    prepare_study_runs(database)
+    selected = runner.invoke(
+        app,
+        [
+            "judge",
+            "select",
+            "base",
+            "candidate",
+            "--database",
+            str(database),
+            "--output",
+            str(study_path),
+            "--sample-size",
+            "4",
+        ],
+    )
+    assert selected.exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["judge", "label", str(study_path), "--split", "holdout"],
+    )
+
+    assert result.exit_code == 1
+    assert "freeze the calibrated rubric" in result.output
 
 
 def test_serve_binds_only_to_localhost(tmp_path: Path, monkeypatch) -> None:

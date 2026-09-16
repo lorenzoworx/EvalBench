@@ -15,11 +15,24 @@ from evalbench.models import EvaluationSuite, Generation, RunSummary
 from evalbench.providers import OllamaProvider, ProviderError, ReplayProvider
 from evalbench.service import RunService
 from evalbench.store import Database
+from evalbench.study import (
+    StudySplit,
+    StudyValidationError,
+    build_judge_study,
+    load_study,
+    record_human_score,
+    save_study,
+    validate_study_rubric,
+)
 from evalbench.suite import SuiteValidationError, load_suite
 
 app = typer.Typer(help="Explainable local-model evaluation.", no_args_is_help=True)
 suite_app = typer.Typer(help="Validate and inspect evaluation suites.", no_args_is_help=True)
+judge_app = typer.Typer(
+    help="Prepare and label the local judge-validation study.", no_args_is_help=True
+)
 app.add_typer(suite_app, name="suite")
+app.add_typer(judge_app, name="judge")
 
 
 def _load_replay(path: Path) -> dict[str, str | Generation]:
@@ -169,6 +182,109 @@ def compare_runs(
         typer.echo(f"Comparison failed: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(comparison.model_dump_json(indent=2))
+
+
+@judge_app.command("select")
+def select_judge_examples(
+    baseline_run_id: Annotated[str, typer.Argument(help="First target-model run ID.")],
+    candidate_run_id: Annotated[str, typer.Argument(help="Second target-model run ID.")],
+    database_path: Annotated[Path, typer.Option("--database", dir_okay=False)] = Path(
+        "results/evalbench.db"
+    ),
+    output: Annotated[Path, typer.Option("--output", dir_okay=False)] = Path(
+        "labels/judge-study.json"
+    ),
+    sample_size: Annotated[int, typer.Option("--sample-size", min=2)] = 60,
+    seed: Annotated[int, typer.Option("--seed")] = 42,
+) -> None:
+    """Select balanced outputs and freeze their calibration/holdout split."""
+    if output.exists():
+        typer.echo(f"Study already exists at {output}; choose a new output path.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        study = build_judge_study(
+            Database(database_path),
+            baseline_run_id,
+            candidate_run_id,
+            sample_size=sample_size,
+            seed=seed,
+        )
+        save_study(output, study)
+    except (KeyError, ValueError) as exc:
+        typer.echo(f"Study selection failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Selected {study.sample_size} blinded outputs: "
+        f"{study.sample_size // 2} calibration and {study.sample_size // 2} holdout.\n"
+        f"Saved {output}"
+    )
+
+
+@judge_app.command("label")
+def label_judge_examples(
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+    split: Annotated[StudySplit, typer.Option("--split")] = "calibration",
+) -> None:
+    """Blindly score one study split, saving after every response."""
+    try:
+        study = load_study(path)
+        rubric = validate_study_rubric(study)
+        if split == "holdout" and rubric.status != "frozen":
+            raise StudyValidationError(
+                "freeze the calibrated rubric before labeling the untouched holdout split"
+            )
+    except StudyValidationError as exc:
+        typer.echo(f"Labeling failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    pending = [
+        example
+        for example in study.examples
+        if example.split == split and example.human_score is None
+    ]
+    total = sum(example.split == split for example in study.examples)
+    completed = total - len(pending)
+    if not pending:
+        typer.echo(f"{split.title()} labeling is already complete ({total}/{total}).")
+        return
+
+    typer.echo(rubric.system_prompt())
+    typer.echo(
+        f"\nLabeling {split}: {completed}/{total} complete. "
+        "Model identity is hidden. Enter 0, 1, 2, or q to stop."
+    )
+    for example in pending:
+        typer.echo("\n" + "=" * 72)
+        typer.echo(f"Sample {example.sample_id} · Category: {example.category}")
+        typer.echo(f"\nPROMPT\n{example.prompt}")
+        reference = (
+            json.dumps(example.expected, ensure_ascii=False)
+            if example.expected is not None
+            else "—"
+        )
+        typer.echo(f"\nEXPECTED REFERENCE\n{reference}")
+        typer.echo(f"\nCANDIDATE ANSWER\n{example.answer}")
+        score: Literal[0, 1, 2]
+        while True:
+            value = typer.prompt("Score").strip().casefold()
+            if value == "q":
+                typer.echo(f"Stopped. Progress saved at {completed}/{total}.")
+                return
+            if value == "0":
+                score = 0
+                break
+            if value == "1":
+                score = 1
+                break
+            if value == "2":
+                score = 2
+                break
+            typer.echo("Enter 0, 1, 2, or q.", err=True)
+        study = record_human_score(study, example.sample_id, score)
+        save_study(path, study)
+        completed += 1
+        typer.echo(f"Saved {completed}/{total}.")
+    typer.echo(f"{split.title()} labeling complete ({total}/{total}).")
 
 
 @app.command("serve")

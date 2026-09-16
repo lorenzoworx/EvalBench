@@ -7,6 +7,17 @@ from evalbench.judge import JudgeRubric
 from evalbench.models import EvaluationCase
 
 
+def rubric_content_hash(rubric: JudgeRubric) -> str:
+    """Hash a complete rubric independently of its filesystem representation."""
+    canonical = json.dumps(
+        rubric.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def generation_request_hash(
     *, model: str, case: EvaluationCase, provider_schema_version: str
 ) -> str:
@@ -37,12 +48,6 @@ def judge_request_hash(
     provider_schema_version: str,
 ) -> str:
     """Hash every input that can change an ordinal judge response."""
-    rubric_content = json.dumps(
-        rubric.model_dump(mode="json"),
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
     request = {
         "answer_sha256": hashlib.sha256(answer.encode("utf-8")).hexdigest(),
         "case_id": case.id,
@@ -50,7 +55,7 @@ def judge_request_hash(
         "expected_reference": case.expected,
         "judge_model": judge_model,
         "provider_schema_version": provider_schema_version,
-        "rubric_content_sha256": hashlib.sha256(rubric_content).hexdigest(),
+        "rubric_content_sha256": rubric_content_hash(rubric),
         "rubric_id": rubric.id,
         "rubric_version": rubric.version,
     }
