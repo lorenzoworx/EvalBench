@@ -25,6 +25,8 @@ deterministic offline replay and direct local Ollama inference.
 - Deterministic balanced study selection with blinded, resumable human labeling.
 - Cached study scoring plus reproducible agreement, weighted-kappa, confusion-matrix,
   confidence-interval, and category reports.
+- A guarded rubric-freeze transition that preserves calibration provenance and seals
+  untouched holdout data until calibration is complete.
 - One shared run service used by both the CLI and web API.
 
 Rubric calibration, real holdout labels, and the published validation result remain later slices.
@@ -102,6 +104,16 @@ evalbench judge score labels/judge-study.json \
 evalbench judge report labels/judge-study.json \
   --split calibration \
   --output labels/calibration-report.json
+# Clarify the bundled rubric once, set its status to frozen, then:
+evalbench judge freeze labels/judge-study.json
+evalbench judge label labels/judge-study.json --split holdout
+evalbench judge score labels/judge-study.json \
+  --split holdout \
+  --judge-model gemma3:4b \
+  --database results/evalbench.db
+evalbench judge report labels/judge-study.json \
+  --split holdout \
+  --output labels/holdout-report.json
 ```
 
 The study artifact records source provenance, rubric identity and content hash, seed,
@@ -113,6 +125,9 @@ Judge scoring is independently resumable and reuses the content-addressed score
 cache. The report records raw agreement, quadratic-weighted Cohen's kappa, a seeded
 bootstrap confidence interval, a human-row/judge-column confusion matrix, category
 breakdowns, source provenance, and the single-labeler limitation.
+Freezing requires complete calibration labels and judge scores plus a completely
+untouched holdout. The study retains the calibration rubric hash and results while
+recording the frozen rubric separately for holdout scoring and reporting.
 
 ## Local web application
 

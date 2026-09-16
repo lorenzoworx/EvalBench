@@ -31,6 +31,15 @@ class StudyRun(BaseModel):
     model: str
 
 
+class RubricProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rubric_id: str
+    rubric_version: str
+    rubric_status: Literal["calibration", "frozen"]
+    rubric_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class StudyExample(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -56,7 +65,9 @@ class JudgeStudy(BaseModel):
     schema_version: Literal["judge-study-v1"] = "judge-study-v1"
     rubric_id: str
     rubric_version: str
+    rubric_status: Literal["calibration", "frozen"] = "calibration"
     rubric_content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calibration_rubric: RubricProvenance | None = None
     seed: int
     sample_size: int = Field(gt=0)
     source_runs: list[StudyRun]
@@ -124,6 +135,15 @@ class JudgeStudy(BaseModel):
         has_judge_scores = any(example.judge_score is not None for example in self.examples)
         if has_judge_scores and not self.judge_model:
             raise ValueError("scored examples require judge provenance")
+        if self.calibration_rubric is not None:
+            if self.calibration_rubric.rubric_status != "calibration":
+                raise ValueError("saved calibration provenance must describe a calibration rubric")
+            if self.calibration_rubric.rubric_id != self.rubric_id:
+                raise ValueError("calibration and frozen rubric IDs must match")
+            if self.rubric_status != "frozen":
+                raise ValueError("saved calibration provenance requires a frozen active rubric")
+        if self.rubric_status == "frozen" and self.calibration_rubric is None:
+            raise ValueError("a frozen study must preserve its calibration rubric provenance")
         return self
 
 
@@ -144,6 +164,7 @@ class StudyAgreementReport(BaseModel):
     split: StudySplit
     rubric_id: str
     rubric_version: str
+    rubric_status: Literal["calibration", "frozen"]
     rubric_content_sha256: str
     judge_model: str
     source_runs: list[StudyRun]
@@ -269,9 +290,12 @@ def build_judge_study(
         )
     rng.shuffle(examples)
     selected_rubric = rubric or load_rubric()
+    if selected_rubric.status != "calibration":
+        raise StudyValidationError("a new judge study must start with a calibration rubric")
     return JudgeStudy(
         rubric_id=selected_rubric.id,
         rubric_version=selected_rubric.version,
+        rubric_status=selected_rubric.status,
         rubric_content_sha256=rubric_content_hash(selected_rubric),
         seed=seed,
         sample_size=sample_size,
@@ -315,10 +339,58 @@ def validate_study_rubric(study: JudgeStudy, rubric: JudgeRubric | None = None) 
     if (
         study.rubric_id,
         study.rubric_version,
+        study.rubric_status,
         study.rubric_content_sha256,
-    ) != (selected.id, selected.version, rubric_content_hash(selected)):
+    ) != (selected.id, selected.version, selected.status, rubric_content_hash(selected)):
         raise StudyValidationError("study rubric provenance does not match the current rubric")
     return selected
+
+
+def freeze_study_rubric(
+    study: JudgeStudy,
+    rubric: JudgeRubric | None = None,
+) -> JudgeStudy:
+    """Adopt a frozen rubric after complete calibration without touching holdout data."""
+    selected = rubric or load_rubric()
+    if selected.status != "frozen":
+        raise StudyValidationError("current rubric must have status 'frozen'")
+    if study.rubric_status == "frozen":
+        validate_study_rubric(study, selected)
+        return study
+    if selected.id != study.rubric_id:
+        raise StudyValidationError("frozen rubric ID must match the calibration rubric ID")
+
+    calibration = [example for example in study.examples if example.split == "calibration"]
+    missing_human = sum(example.human_score is None for example in calibration)
+    missing_judge = sum(example.judge_score is None for example in calibration)
+    if missing_human or missing_judge:
+        raise StudyValidationError(
+            "rubric cannot be frozen before calibration is complete: "
+            f"{missing_human} human and {missing_judge} judge scores are missing"
+        )
+    holdout = [example for example in study.examples if example.split == "holdout"]
+    if any(
+        example.human_score is not None or example.judge_score is not None for example in holdout
+    ):
+        raise StudyValidationError("rubric cannot be frozen after holdout scores exist")
+
+    previous = RubricProvenance(
+        rubric_id=study.rubric_id,
+        rubric_version=study.rubric_version,
+        rubric_status=study.rubric_status,
+        rubric_content_sha256=study.rubric_content_sha256,
+    )
+    payload = study.model_dump(mode="python")
+    payload.update(
+        {
+            "rubric_id": selected.id,
+            "rubric_version": selected.version,
+            "rubric_status": selected.status,
+            "rubric_content_sha256": rubric_content_hash(selected),
+            "calibration_rubric": previous.model_dump(mode="python"),
+        }
+    )
+    return JudgeStudy.model_validate(payload)
 
 
 def validate_study_split(
@@ -485,6 +557,16 @@ def build_agreement_report(
 ) -> StudyAgreementReport:
     """Summarize complete human/judge pairs for exactly one preassigned split."""
     validate_study_split(study, split, rubric)
+    report_rubric = (
+        study.calibration_rubric
+        if split == "calibration" and study.calibration_rubric is not None
+        else RubricProvenance(
+            rubric_id=study.rubric_id,
+            rubric_version=study.rubric_version,
+            rubric_status=study.rubric_status,
+            rubric_content_sha256=study.rubric_content_sha256,
+        )
+    )
     examples = [example for example in study.examples if example.split == split]
     missing_human = sum(example.human_score is None for example in examples)
     missing_judge = sum(example.judge_score is None for example in examples)
@@ -536,9 +618,10 @@ def build_agreement_report(
     return StudyAgreementReport(
         study_schema_version=study.schema_version,
         split=split,
-        rubric_id=study.rubric_id,
-        rubric_version=study.rubric_version,
-        rubric_content_sha256=study.rubric_content_sha256,
+        rubric_id=report_rubric.rubric_id,
+        rubric_version=report_rubric.rubric_version,
+        rubric_status=report_rubric.rubric_status,
+        rubric_content_sha256=report_rubric.rubric_content_sha256,
         judge_model=study.judge_model,
         source_runs=study.source_runs,
         example_count=len(examples),

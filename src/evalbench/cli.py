@@ -21,6 +21,7 @@ from evalbench.study import (
     StudyValidationError,
     build_agreement_report,
     build_judge_study,
+    freeze_study_rubric,
     load_study,
     record_human_score,
     save_agreement_report,
@@ -370,6 +371,28 @@ def report_judge_study(
         save_agreement_report(output, report)
         typer.echo(f"Saved {output}", err=True)
     typer.echo(report.model_dump_json(indent=2))
+
+
+@judge_app.command("freeze")
+def freeze_judge_study(
+    path: Annotated[Path, typer.Argument(exists=True, dir_okay=False, readable=True)],
+) -> None:
+    """Adopt the bundled frozen rubric after calibration is complete."""
+    try:
+        study = freeze_study_rubric(load_study(path))
+        save_study(path, study)
+    except StudyValidationError as exc:
+        typer.echo(f"Rubric freeze failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    calibration_count = sum(
+        example.split == "calibration" and example.human_score is not None
+        for example in study.examples
+    )
+    holdout_count = sum(example.split == "holdout" for example in study.examples)
+    typer.echo(
+        f"Frozen {study.rubric_id} at {study.rubric_version}; preserved "
+        f"{calibration_count} calibration pairs and unlocked {holdout_count} holdout examples."
+    )
 
 
 @app.command("serve")

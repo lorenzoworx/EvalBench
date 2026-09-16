@@ -19,12 +19,14 @@ from evalbench.study import (
     StudyValidationError,
     build_agreement_report,
     build_judge_study,
+    freeze_study_rubric,
     load_study,
     record_human_score,
     record_judge_response,
     save_study,
     score_study_split,
     validate_study_rubric,
+    validate_study_split,
 )
 
 CATEGORIES = ("reasoning", "structured", "instruction", "safety")
@@ -104,6 +106,20 @@ def study_database(tmp_path: Path, *, same_model: bool = False) -> Database:
                 ),
             )
     return database
+
+
+def complete_calibration(study):
+    calibration = [example for example in study.examples if example.split == "calibration"]
+    for index, example in enumerate(calibration):
+        study = record_human_score(study, example.sample_id, index % 3)
+        study = record_judge_response(
+            study,
+            example.sample_id,
+            JudgeResponse(score=index % 3, rationale="Fixture score."),
+            judge_model="gemma3:4b",
+            provider_schema_version="study-judge-v1",
+        )
+    return study
 
 
 def test_selection_is_reproducible_and_balanced_before_labeling(tmp_path: Path) -> None:
@@ -292,3 +308,78 @@ def test_agreement_report_requires_complete_scores_and_seals_holdout(tmp_path: P
         build_agreement_report(study, "calibration", bootstrap_samples=10)
     with pytest.raises(StudyValidationError, match="freeze the calibrated rubric"):
         build_agreement_report(study, "holdout", bootstrap_samples=10)
+
+
+def test_freeze_preserves_calibration_provenance_and_unlocks_holdout(tmp_path: Path) -> None:
+    study = complete_calibration(
+        build_judge_study(study_database(tmp_path), "baseline", "candidate", sample_size=4)
+    )
+    calibration_hash = study.rubric_content_sha256
+    frozen_rubric = load_rubric().model_copy(update={"version": "1.0.0", "status": "frozen"})
+
+    frozen = freeze_study_rubric(study, frozen_rubric)
+
+    assert frozen.rubric_status == "frozen"
+    assert frozen.rubric_version == "1.0.0"
+    assert frozen.rubric_content_sha256 != calibration_hash
+    assert frozen.calibration_rubric is not None
+    assert frozen.calibration_rubric.rubric_status == "calibration"
+    assert frozen.calibration_rubric.rubric_content_sha256 == calibration_hash
+    assert [example.human_score for example in frozen.examples] == [
+        example.human_score for example in study.examples
+    ]
+    assert [example.judge_score for example in frozen.examples] == [
+        example.judge_score for example in study.examples
+    ]
+    assert validate_study_split(frozen, "holdout", frozen_rubric) == frozen_rubric
+    assert freeze_study_rubric(frozen, frozen_rubric) == frozen
+
+    calibration_report = build_agreement_report(
+        frozen,
+        "calibration",
+        bootstrap_samples=10,
+        rubric=frozen_rubric,
+    )
+    assert calibration_report.rubric_status == "calibration"
+    assert calibration_report.rubric_content_sha256 == calibration_hash
+
+    completed_holdout = frozen
+    for example in [item for item in frozen.examples if item.split == "holdout"]:
+        completed_holdout = record_human_score(completed_holdout, example.sample_id, 2)
+        completed_holdout = record_judge_response(
+            completed_holdout,
+            example.sample_id,
+            JudgeResponse(score=2, rationale="Fixture holdout score."),
+            judge_model="gemma3:4b",
+            provider_schema_version="study-judge-v1",
+        )
+    holdout_report = build_agreement_report(
+        completed_holdout,
+        "holdout",
+        bootstrap_samples=10,
+        rubric=frozen_rubric,
+    )
+    assert holdout_report.rubric_status == "frozen"
+    assert holdout_report.rubric_content_sha256 == frozen.rubric_content_sha256
+
+
+def test_freeze_requires_complete_calibration_and_untouched_holdout(tmp_path: Path) -> None:
+    study = build_judge_study(study_database(tmp_path), "baseline", "candidate", sample_size=4)
+    calibration_rubric = load_rubric()
+    frozen_rubric = calibration_rubric.model_copy(update={"version": "1.0.0", "status": "frozen"})
+
+    with pytest.raises(StudyValidationError, match="status 'frozen'"):
+        freeze_study_rubric(study, calibration_rubric)
+    with pytest.raises(StudyValidationError, match="calibration is complete"):
+        freeze_study_rubric(study, frozen_rubric)
+    with pytest.raises(StudyValidationError, match="rubric ID"):
+        freeze_study_rubric(
+            study,
+            frozen_rubric.model_copy(update={"id": "different_v1"}),
+        )
+
+    completed = complete_calibration(study)
+    first_holdout = next(example for example in completed.examples if example.split == "holdout")
+    touched = record_human_score(completed, first_holdout.sample_id, 1)
+    with pytest.raises(StudyValidationError, match="after holdout scores exist"):
+        freeze_study_rubric(touched, frozen_rubric)

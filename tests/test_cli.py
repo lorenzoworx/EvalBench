@@ -6,6 +6,7 @@ from typing import Any
 from typer.testing import CliRunner
 
 import evalbench.cli as cli_module
+import evalbench.study as study_module
 from evalbench.cli import app
 from evalbench.models import EvaluationCase, EvaluationSuite, Generation
 from evalbench.providers import ReplayProvider
@@ -596,6 +597,26 @@ def test_judge_score_and_report_commands_complete_calibration_study(
     assert sum(sum(row) for row in report["confusion_matrix"]) == 2
     assert "one labeler" in report["limitations"][0]
     assert json.loads(report_path.read_text(encoding="utf-8")) == report
+
+    frozen_rubric = study_module.load_rubric().model_copy(
+        update={"version": "1.0.0", "status": "frozen"}
+    )
+    monkeypatch.setattr(study_module, "load_rubric", lambda: frozen_rubric)
+    freeze = runner.invoke(app, ["judge", "freeze", str(study_path)])
+
+    assert freeze.exit_code == 0
+    assert "preserved 2 calibration pairs and unlocked 2 holdout examples" in freeze.output
+    frozen_study = load_study(study_path)
+    assert frozen_study.rubric_status == "frozen"
+    assert frozen_study.calibration_rubric is not None
+
+    holdout = runner.invoke(
+        app,
+        ["judge", "label", str(study_path), "--split", "holdout"],
+        input="q\n",
+    )
+    assert holdout.exit_code == 0
+    assert "Labeling holdout: 0/2 complete" in holdout.output
 
 
 def test_serve_binds_only_to_localhost(tmp_path: Path, monkeypatch) -> None:
