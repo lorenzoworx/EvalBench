@@ -4,6 +4,14 @@ EvalBench is an explainable evaluation workbench for local language models. It i
 being built in small, verified milestones; the current implementation supports both
 deterministic offline replay and direct local Ollama inference.
 
+[Case study](https://boywithabot.com/projects/project-details.html?id=evalbench) ·
+[Run it locally](#local-web-application)
+
+![EvalBench dashboard after an offline replay of the smoke suite: run summary, category accuracy, and an exact McNemar paired comparison](docs/images/evalbench-dashboard.png)
+
+*The dashboard after two offline replay runs of the smoke suite. A hosted demo is
+not available yet; the dashboard and CLI run locally.*
+
 ## Current capabilities
 
 - A balanced 60-case general-assistant suite covering reasoning, structured
