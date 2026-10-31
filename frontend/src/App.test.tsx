@@ -74,7 +74,7 @@ describe("evaluation control", () => {
 
   it("requests cooperative cancellation and explains the delay", async () => {
     render(<App />);
-    await screen.findByRole("button", { name: "Run evaluation" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run evaluation" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Run evaluation" }));
 
     const cancel = await screen.findByRole("button", { name: "Cancel after current case" });
@@ -99,7 +99,7 @@ describe("evaluation control", () => {
   it("shows a launch failure before a run exists", async () => {
     api.startRun.mockRejectedValueOnce(new Error("Another evaluation is already active"));
     render(<App />);
-    await screen.findByRole("button", { name: "Run evaluation" });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Run evaluation" })).toBeEnabled());
 
     fireEvent.click(screen.getByRole("button", { name: "Run evaluation" }));
 
