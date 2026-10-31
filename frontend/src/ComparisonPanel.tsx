@@ -26,8 +26,7 @@ function percentagePoints(value: number): string {
 }
 
 function pValue(value: number): string {
-  if (value < 0.0001) return "< 0.0001";
-  return value.toFixed(4);
+  return String(value);
 }
 
 function compatible(left: RunSummary, right: RunSummary): boolean {
