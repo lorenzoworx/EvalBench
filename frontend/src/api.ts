@@ -1,3 +1,4 @@
+import { replayMode } from "./mode";
 export type RunState =
   | "pending"
   | "running"
@@ -116,6 +117,10 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (replayMode) {
+    const { replayRequest } = await import("./replay");
+    return replayRequest<T>(path, init?.method ?? "GET");
+  }
   const response = await fetch(path, init);
   if (!response.ok) {
     let message = `Request failed with HTTP ${response.status}.`;

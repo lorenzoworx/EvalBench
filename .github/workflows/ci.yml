@@ -12,6 +12,7 @@ jobs:
       - run: pip install -e '.[dev]'
       - run: ruff check . && ruff format --check .
       - run: mypy src
+      - run: python -m evalbench.replay_export --check
       - run: pytest --cov=evalbench --cov-report=term-missing --cov-fail-under=85
   frontend:
     runs-on: ubuntu-latest
@@ -24,4 +25,23 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+      - run: npm run build:demo
 
+  replay-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -f Dockerfile.demo --tag evalbench-replay:smoke .
+      - name: Verify static-only public replay
+        run: |
+          docker run --detach --name evalbench-replay-smoke --publish 8080:8080 evalbench-replay:smoke
+          trap 'docker rm --force evalbench-replay-smoke' EXIT
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8080/replay-data.json > /dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8080/replay-data.json > /dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST http://127.0.0.1:8080/api/runs)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/runs)" = 404

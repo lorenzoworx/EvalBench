@@ -9,8 +9,7 @@ deterministic offline replay and direct local Ollama inference.
 
 ![EvalBench dashboard after an offline replay of the smoke suite: run summary, category accuracy, and an exact McNemar paired comparison](docs/images/evalbench-dashboard.png)
 
-*The dashboard after two offline replay runs of the smoke suite. A hosted demo is
-not available yet; the dashboard and CLI run locally.*
+*The local workbench after two offline replay runs. The static replay build below demonstrates stored fixtures without an inference server.*
 
 ## Current capabilities
 
@@ -38,6 +37,23 @@ not available yet; the dashboard and CLI run locally.*
 - One shared run service used by both the CLI and web API.
 
 Rubric calibration, real holdout labels, and the published validation result remain later slices.
+
+## Static public replay
+
+The marking-desk interface puts each case's prompt, output, reference, every grader result, and rationale on a grading receipt. Red failure notes and violet pass stamps are paired with text. Paired comparisons retain all four outcome counts and display the full p-value returned by the API.
+
+The public demo is a separate static build. It contains two explicitly fictional response fixtures graded through `RunService`, not claimed model benchmark results. The exporter checks the real smoke suite, graders, bootstrap metrics, and exact McNemar comparison. Replay API writes are rejected before any request; model-launch controls are absent.
+
+```bash
+python -m evalbench.replay_export --check
+cd frontend
+npm ci
+npm run build:demo
+```
+
+Serve `frontend/dist-demo/` as static files at `/projects/evalbench/` (keep its trailing slash). Asset and data URLs are relative, so reverse proxies can strip the prefix. For a static-only container, run `docker build -f Dockerfile.demo -t evalbench-replay .`; it serves port 8080 and contains no inference API or Python backend. The normal `npm run build` and `evalbench serve` retain the local workbench and live model controls. Do not expose that local inference server as the public replay service.
+
+To update fixtures intentionally, edit the files in `examples/` and run `python -m evalbench.replay_export`. The frozen fixture timestamp is synthetic provenance, not an actual model run date. Reduced motion skips all stamp entrances.
 
 ## Setup
 

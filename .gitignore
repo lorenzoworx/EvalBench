@@ -18,3 +18,5 @@ results/*.db*
 .env
 .DS_Store
 questions.md
+
+frontend/dist-demo/

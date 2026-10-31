@@ -8,6 +8,7 @@ import {
   RunSummary,
 } from "./api";
 import ComparisonPanel from "./ComparisonPanel";
+import { replayMode } from "./mode";
 
 interface ResultsWorkspaceProps {
   preferredRunId?: string | null;
@@ -195,7 +196,7 @@ export default function ResultsWorkspace({
                     <b>{percent(storedRun.accuracy)}</b>
                   </span>
                   <span>{storedRun.suite_name} · v{storedRun.suite_version}</span>
-                  <small>{formatDate(storedRun.created_at)}</small>
+                  <small>{replayMode ? "Fictional response fixture" : formatDate(storedRun.created_at)}</small>
                 </button>
               ))}
             </div>
@@ -279,7 +280,7 @@ export default function ResultsWorkspace({
                   </div>
                 </section>
 
-                <ComparisonPanel runs={runs} preferredCandidateId={selectedRunId} />
+                <ComparisonPanel runs={runs} preferredCandidateId={replayMode ? "candidate-fixture" : selectedRunId} />
 
                 <section className="case-explorer" aria-labelledby="cases-title">
                   <div className="subheading">
@@ -318,7 +319,7 @@ export default function ResultsWorkspace({
                   ) : (
                     <div className="case-list">
                       {filteredResults.map((result) => (
-                        <details className="case-card" key={result.case_id}>
+                        <details className="case-card" key={`${selectedRunId}-${result.case_id}`} open={result.case_id === (activeEvidence.results.find((item) => !item.passed) ?? activeEvidence.results[0])?.case_id}>
                           <summary>
                             <span className={`case-outcome ${result.passed ? "passed" : "failed"}`}>
                               {result.passed ? "Pass" : "Fail"}
@@ -329,7 +330,7 @@ export default function ResultsWorkspace({
                             </span>
                             <span className="case-prompt-preview">{result.prompt}</span>
                           </summary>
-                          <div className="case-detail">
+                          <div className="case-detail"><h4>Grading receipt</h4>
                             <div>
                               <span>Prompt</span>
                               <pre>{result.prompt}</pre>
@@ -343,12 +344,12 @@ export default function ResultsWorkspace({
                               <pre>{formatExpected(result.expected)}</pre>
                             </div>
                             <div className="judgment-list">
-                              <span>Judgments</span>
+                              <span>Every grader check</span>
                               {result.judgments.map((judgment, index) => (
                                 <article key={`${judgment.grader_type}-${index}`}>
                                   <strong>{judgment.grader_type}</strong>
                                   <b className={judgment.passed ? "passed" : "failed"}>
-                                    {judgment.passed ? "Passed" : "Failed"} · {judgment.score.toFixed(2)}
+                                    {judgment.passed ? "PASS" : "FAIL"} / {judgment.primary ? "Primary" : "Advisory"} / {judgment.score.toFixed(2)}
                                   </b>
                                   <p>{judgment.rationale}</p>
                                 </article>
