@@ -51,7 +51,7 @@ npm ci
 npm run build:demo
 ```
 
-Serve `frontend/dist-demo/` as static files at `/projects/evalbench/` (keep its trailing slash). Asset and data URLs are relative, so reverse proxies can strip the prefix. For a static-only container, run `docker build -f Dockerfile.demo -t evalbench-replay .`; it serves port 8080 and contains no inference API or Python backend. The normal `npm run build` and `evalbench serve` retain the local workbench and live model controls. Do not expose that local inference server as the public replay service.
+Serve `frontend/dist-demo/` as static files at `/projects/evalbench/` (keep its trailing slash). Asset and data URLs are relative, so reverse proxies can strip the prefix. For a static-only container, run `docker build -f Dockerfile.demo -t evalbench-replay .`; it serves port 8000 and contains no inference API or Python backend. The normal `npm run build` and `evalbench serve` retain the local workbench and live model controls. Do not expose that local inference server as the public replay service.
 
 To update fixtures intentionally, edit the files in `examples/` and run `python -m evalbench.replay_export`. The frozen fixture timestamp is synthetic provenance, not an actual model run date. Reduced motion skips all stamp entrances.
 

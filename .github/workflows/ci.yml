@@ -2,6 +2,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 jobs:
   backend:
     runs-on: ubuntu-latest
@@ -34,14 +35,38 @@ jobs:
       - run: docker build -f Dockerfile.demo --tag evalbench-replay:smoke .
       - name: Verify static-only public replay
         run: |
-          docker run --detach --name evalbench-replay-smoke --publish 8080:8080 evalbench-replay:smoke
+          docker run --detach --name evalbench-replay-smoke --publish 8000:8000 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m,uid=10001,gid=10001 --user 10001:10001 --cap-drop ALL --security-opt no-new-privileges evalbench-replay:smoke
           trap 'docker rm --force evalbench-replay-smoke' EXIT
-          for attempt in {1..30}; do
-            if curl --fail --silent http://127.0.0.1:8080/replay-data.json > /dev/null; then
+          for _ in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8000/replay-data.json > /dev/null; then
               break
             fi
             sleep 1
           done
-          curl --fail --silent http://127.0.0.1:8080/replay-data.json > /dev/null
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST http://127.0.0.1:8080/api/runs)" = 403
-          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/api/runs)" = 404
+          curl --fail --silent http://127.0.0.1:8000/replay-data.json > /dev/null
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' --request POST http://127.0.0.1:8000/api/runs)" = 403
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8000/api/runs)" = 404
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [backend, frontend, replay-container]
+    runs-on: [self-hosted, macOS, ARM64, evalbench-production]
+    timeout-minutes: 25
+    concurrency:
+      group: evalbench-production
+      cancel-in-progress: false
+    environment:
+      name: production
+      url: ${{ vars.PRODUCTION_URL }}/projects/evalbench/
+    steps:
+      - name: Check out the verified commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Deploy and verify the exact commit
+        env:
+          DEPLOY_STACK_DIR: ${{ vars.DEPLOY_STACK_DIR }}
+          PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+        run: |
+          chmod -R a+rX "$GITHUB_WORKSPACE"
+          lockf -t 3600 -k /tmp/boywithabot-production-deploy.lock bash scripts/deploy-production.sh
